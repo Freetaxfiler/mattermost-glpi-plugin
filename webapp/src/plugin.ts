@@ -1,17 +1,23 @@
 import type React from 'react';
 
-// PluginRegistry type matching the Mattermost 10.x webapp Plugin API.
+// PluginRegistry matching Mattermost 10.x webapp Plugin API.
 //
-// This type is provided at runtime by the Mattermost webapp as a parameter
-// to initialize() and is not published as a public npm package. Every
-// Mattermost plugin — including official plugins — defines the required
-// subset of this interface locally.
+// Verified from Mattermost's own registry.ts (release-10.10 and master):
+//   registerAppBarComponent(iconUrl, action, tooltipText, supportedProductIds, rhsComponent, rhsTitle)
 //
-// The interface below matches the exact signature used by
-// Mattermost 10.x webapp for the methods this plugin consumes.
+// The first parameter (iconUrl) is a URL STRING pointing to the icon image,
+// not a React component. The Mattermost AppBar renders icons via <img src={iconUrl}>.
+// When rhsComponent is provided, clicking the icon toggles the right-hand sidebar.
+//
+// This interface is not published as an npm package; every official Mattermost
+// plugin defines the required subset locally.
 export interface PluginRegistry {
   registerAppBarComponent(
-    iconComponent: React.ComponentType,
-    action: React.ComponentType<{ onClose?: () => void }> | (() => void),
+    iconUrl: string,
+    action: undefined,
+    tooltipText: React.ReactNode,
+    supportedProductIds?: unknown,
+    rhsComponent?: React.ComponentType,
+    rhsTitle?: React.ReactNode,
   ): void;
 }
