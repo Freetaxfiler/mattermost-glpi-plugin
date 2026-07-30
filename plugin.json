@@ -1,0 +1,137 @@
+{
+  "id": "com.ntas.glpi",
+  "name": "Mattermost GLPI Plugin",
+  "description": "GLPI IT support inside Mattermost: tickets, follow-ups, attachments, assets, knowledge base, and notifications.",
+  "version": "0.2.0",
+  "min_server_version": "10.11.0",
+  "server": {
+    "executables": {
+      "linux-amd64": "server/dist/plugin-linux-amd64"
+    }
+  },
+  "webapp": {
+    "bundle_path": "webapp/dist/main.js"
+  },
+  "settings_schema": {
+    "header": "Configure the connection to your GLPI instance. Generate the App Token under Setup > General > API and the User Token under the API user's preferences in GLPI.",
+    "settings": [
+      {
+        "key": "glpi_url",
+        "display_name": "GLPI Server URL",
+        "type": "text",
+        "help_text": "The base URL of your GLPI instance, for example https://glpi.example.com.",
+        "placeholder": "https://glpi.example.com",
+        "default": ""
+      },
+      {
+        "key": "app_token",
+        "display_name": "GLPI App Token",
+        "type": "text",
+        "help_text": "The GLPI application token used for authentication.",
+        "default": "",
+        "secret": true
+      },
+      {
+        "key": "user_token",
+        "display_name": "GLPI User Token",
+        "type": "text",
+        "help_text": "The GLPI user token used for authentication.",
+        "default": "",
+        "secret": true
+      },
+      {
+        "key": "default_entity",
+        "display_name": "Default Entity ID",
+        "type": "text",
+        "help_text": "Numeric GLPI entity ID used when creating tickets. Leave empty to use the API user's default entity.",
+        "placeholder": "0",
+        "default": ""
+      },
+      {
+        "key": "default_category",
+        "display_name": "Default Category ID",
+        "type": "text",
+        "help_text": "Numeric GLPI ITIL category ID applied to new tickets when the user does not choose one.",
+        "placeholder": "",
+        "default": ""
+      },
+      {
+        "key": "notification_channel_id",
+        "display_name": "Notification Channel ID",
+        "type": "text",
+        "help_text": "Channel ID where GLPI webhook notifications are posted. Leave empty to disable channel notifications.",
+        "default": ""
+      },
+      {
+        "key": "webhook_secret",
+        "display_name": "Webhook Secret",
+        "type": "generated",
+        "help_text": "Shared secret for the GLPI webhook endpoint. Configure GLPI to POST to <site-url>/plugins/com.ntas.glpi/webhook with the X-GLPI-Secret header set to this value.",
+        "default": ""
+      },
+      {
+        "key": "enable_debug",
+        "display_name": "Enable Debug Logging",
+        "type": "bool",
+        "help_text": "Enable additional debug logging for troubleshooting.",
+        "default": false
+      },
+      {
+        "key": "max_upload_size_bytes",
+        "display_name": "Maximum Upload Size (bytes)",
+        "type": "number",
+        "help_text": "Maximum allowed file upload size in bytes. Default: 10485760 (10 MB).",
+        "default": 10485760
+      },
+      {
+        "key": "allowed_mimes",
+        "display_name": "Allowed MIME Types",
+        "type": "text",
+        "help_text": "Comma-separated list of allowed MIME types for file uploads. Example: image/jpeg,image/png,application/pdf. Leave empty to use the default set.",
+        "default": ""
+      },
+      {
+        "key": "rate_limit_rps",
+        "display_name": "GLPI Rate Limit (requests/second)",
+        "type": "number",
+        "help_text": "Maximum requests per second to the GLPI API. Default: 5.",
+        "default": 5
+      },
+      {
+        "key": "request_timeout_seconds",
+        "display_name": "GLPI Request Timeout (seconds)",
+        "type": "number",
+        "help_text": "Timeout for GLPI API requests in seconds. Default: 10.",
+        "default": 10
+      },
+      {
+        "key": "webhook_replay_window_seconds",
+        "display_name": "Webhook Replay Window (seconds)",
+        "type": "number",
+        "help_text": "Time window in seconds during which duplicate webhook deliveries are detected and dropped. Default: 86400 (24 hours).",
+        "default": 86400
+      },
+      {
+        "key": "retry_queue_worker_count",
+        "display_name": "Retry Queue Workers",
+        "type": "number",
+        "help_text": "Number of worker goroutines processing the retry queue. Default: 1.",
+        "default": 1
+      },
+      {
+        "key": "retry_queue_max_attempts",
+        "display_name": "Retry Queue Max Attempts",
+        "type": "number",
+        "help_text": "Maximum number of retry attempts for failed operations. Default: 5.",
+        "default": 5
+      },
+      {
+        "key": "retry_queue_backoff_base_seconds",
+        "display_name": "Retry Queue Backoff Base (seconds)",
+        "type": "number",
+        "help_text": "Base backoff interval in seconds for retry queue exponential backoff. Default: 2.",
+        "default": 2
+      }
+    ]
+  }
+}
