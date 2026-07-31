@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import type { ViewName } from '../types';
+import React, { useState, useEffect } from 'react';
+import type { ViewName, CategorySummary } from '../types';
 import { api } from '../api';
 
 interface CreateTicketProps {
@@ -14,15 +14,28 @@ const PRIORITY_OPTIONS = [
   { value: 5, label: 'Very high' },
 ];
 
+const REQUEST_TYPE_OPTIONS = [
+  { value: 1, label: 'Incident' },
+  { value: 2, label: 'Request' },
+];
+
 export default function CreateTicket({ onNavigate }: CreateTicketProps) {
   const [subject, setSubject] = useState('');
   const [content, setContent] = useState('');
+  const [type, setType] = useState(1);
   const [priority, setPriority] = useState(3);
   const [urgency, setUrgency] = useState(3);
-  const [categoryId, setCategoryId] = useState('');
+  const [categoryId, setCategoryId] = useState<number | 0>(0);
+  const [categories, setCategories] = useState<CategorySummary[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<number | null>(null);
+
+  useEffect(() => {
+    api.getCategories()
+      .then((r) => setCategories(r.categories))
+      .catch(() => {});
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -36,16 +49,18 @@ export default function CreateTicket({ onNavigate }: CreateTicketProps) {
       const result = await api.createTicket({
         subject: subject.trim(),
         content: content.trim(),
+        type,
         priority,
         urgency,
-        category_id: categoryId ? parseInt(categoryId, 10) : 0,
+        category_id: categoryId || 0,
       });
       setSuccess(result.id);
       setSubject('');
       setContent('');
+      setType(1);
       setPriority(3);
       setUrgency(3);
-      setCategoryId('');
+      setCategoryId(0);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to create ticket');
     } finally {
@@ -112,6 +127,33 @@ export default function CreateTicket({ onNavigate }: CreateTicketProps) {
           </div>
 
           <div className="glpi-form-group">
+            <label className="glpi-label">Request Type</label>
+            <select
+              className="glpi-select"
+              value={type}
+              onChange={(e) => setType(Number(e.target.value))}
+            >
+              {REQUEST_TYPE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="glpi-form-group">
+            <label className="glpi-label">Category</label>
+            <select
+              className="glpi-select"
+              value={categoryId}
+              onChange={(e) => setCategoryId(Number(e.target.value))}
+            >
+              <option value={0}>Default category</option>
+              {categories.map((c) => (
+                <option key={c.ID} value={c.ID}>{c.Name}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="glpi-form-group">
             <label className="glpi-label">Priority</label>
             <select
               className="glpi-select"
@@ -135,17 +177,6 @@ export default function CreateTicket({ onNavigate }: CreateTicketProps) {
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
               ))}
             </select>
-          </div>
-
-          <div className="glpi-form-group">
-            <label className="glpi-label">Category ID</label>
-            <input
-              className="glpi-input"
-              type="number"
-              value={categoryId}
-              onChange={(e) => setCategoryId(e.target.value)}
-              placeholder="Leave empty for default"
-            />
           </div>
 
           {error && <div className="glpi-form-error" style={{ marginBottom: 10 }}>{error}</div>}

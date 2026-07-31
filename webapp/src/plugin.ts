@@ -20,4 +20,10 @@ export interface PluginRegistry {
     rhsComponent?: React.ComponentType,
     rhsTitle?: React.ReactNode,
   ): void;
+  // Registers a handler for a Mattermost WebSocket event. Plugin events are
+  // delivered under the server-prefixed name custom_<pluginId>_<event>.
+  registerWebSocketEventHandler(
+    event: string,
+    handler: (msg: { event: string; data?: Record<string, unknown> }) => void,
+  ): void;
 }

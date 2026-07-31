@@ -101,6 +101,10 @@ func (p *Plugin) OpenCreateTicketDialog(args *model.CommandArgs) error {
 		{Text: "High", Value: "4"},
 		{Text: "Very high", Value: "5"},
 	}
+	typeOptions := []*model.PostActionOptions{
+		{Text: "Incident", Value: "1"},
+		{Text: "Request", Value: "2"},
+	}
 
 	dialog := model.Dialog{
 		CallbackId:  "glpi_create_ticket",
@@ -134,6 +138,14 @@ func (p *Plugin) OpenCreateTicketDialog(args *model.CommandArgs) error {
 				Default:     "3",
 				Optional:    true,
 				Options:     urgencyOptions,
+			},
+			{
+				DisplayName: "Type",
+				Name:        "type",
+				Type:        "select",
+				Default:     "1",
+				Optional:    true,
+				Options:     typeOptions,
 			},
 			{
 				DisplayName: "Category ID",
@@ -178,6 +190,8 @@ func (p *Plugin) handleDialogSubmission(ctx context.Context, req *model.SubmitDi
 
 	priority, _ := strconv.Atoi(priorityRaw)
 	urgency, _ := strconv.Atoi(urgencyRaw)
+	typeRaw := handlers.StringField(req.Submission, "type")
+	typeID, _ := strconv.Atoi(typeRaw)
 
 	config := p.currentConfiguration()
 	categoryID := 0
@@ -232,6 +246,7 @@ func (p *Plugin) handleDialogSubmission(ctx context.Context, req *model.SubmitDi
 		Content:        description,
 		Priority:       priority,
 		Urgency:        urgency,
+		Type:           typeID,
 		ITILCategoryID: categoryID,
 		EntityID:       entityID,
 		RequesterID:    requesterID,
@@ -273,12 +288,16 @@ func (p *Plugin) handleDialogSubmission(ctx context.Context, req *model.SubmitDi
 	}
 	p.API.SendEphemeralPost(req.UserId, post)
 
+	p.recordTicketCreatedNotification(result.ID, createReq.Name)
 	p.API.LogInfo("Ticket created from dialog", "id", result.ID, "user_id", req.UserId, "request_id", reqID)
 	return nil, nil
 }
 
 // notifyWebhookEvent posts a GLPI notification into Mattermost.
 func (p *Plugin) notifyWebhookEvent(event handlers.WebhookEvent) {
+	// Persist for the webapp notification center before posting.
+	p.recordNotification(notificationFromWebhookEvent(event))
+
 	message := formatWebhookMessage(event)
 
 	config := p.currentConfiguration()

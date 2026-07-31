@@ -26,6 +26,7 @@ export interface CreateTicketRequest {
   priority: number;
   urgency: number;
   category_id: number;
+  type?: number;
 }
 
 export interface CreateTicketResponse {
@@ -115,3 +116,102 @@ export type ViewName =
   | 'knowledge-base'
   | 'notifications'
   | 'settings';
+
+// ITIL categories for the ticket category picker.
+export interface CategorySummary {
+  ID: number;
+  Name: string;
+}
+
+export interface CategoryListResponse {
+  categories: CategorySummary[];
+  total: number;
+  count: number;
+}
+
+// Full knowledge base article (body is GLPI rich-text HTML).
+export interface KnowledgeArticle {
+  id: number;
+  subject: string;
+  content: string;
+  category: string;
+  date: string;
+  date_mod: string;
+}
+
+// Knowledge base category for the KB filter.
+export interface KnowbaseCategorySummary {
+  ID: number;
+  Name: string;
+}
+
+export interface KnowledgeCategoryListResponse {
+  categories: KnowbaseCategorySummary[];
+  total: number;
+  count: number;
+}
+
+// Normalized single-asset detail view.
+export interface AssetDetail {
+  id: number;
+  itemtype: string;
+  name: string;
+  serial: string;
+  otherserial: string;
+  manufacturer: string;
+  model: string;
+  location: string;
+  user: string;
+  tech_user: string;
+  state: string;
+  warranty_date: string;
+  notes: string;
+}
+
+// Document attached to a ticket.
+export interface DocumentInfo {
+  id: number;
+  name: string;
+  filename: string;
+  mime_type: string;
+  size: number;
+}
+
+// Aggregated dashboard statistics.
+export interface DashboardData {
+  open: number;
+  assigned: number;
+  resolved: number;
+  pending: number;
+  closed: number;
+  critical: number;
+  overdue: number;
+  recent: TicketSummary[];
+}
+
+// Persisted notification shown in the notification center.
+export interface AppNotification {
+  id: string;
+  type: string;
+  ticket_id: number;
+  title: string;
+  status: string;
+  url: string;
+  created_at: number;
+}
+
+export interface NotificationListResponse {
+  notifications: AppNotification[];
+  unread: number;
+}
+
+// Plugin runtime information for the Settings page.
+export interface SystemInfo {
+  plugin_version: string;
+  retry_queue: {
+    workers: number;
+    max_attempts: number;
+    backoff_base: number;
+  };
+  webhook_configured: boolean;
+}

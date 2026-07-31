@@ -52,6 +52,16 @@ class GLPIWebappPlugin {
       GLPISidebar,
       'GLPI',
     );
+
+    // Live refresh: when the server pushes a notification WebSocket event
+    // (custom_com.ntas.glpi_notification), broadcast a window event that the
+    // sidebar listens for to refresh its badge and active view.
+    registry.registerWebSocketEventHandler(
+      'custom_com.ntas.glpi_notification',
+      () => {
+        window.dispatchEvent(new CustomEvent('glpi:notification'));
+      },
+    );
   }
 
   uninitialize(): void {

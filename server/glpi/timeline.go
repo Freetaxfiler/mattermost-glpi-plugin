@@ -95,9 +95,15 @@ func (c *Client) GetTicketTimeline(ctx context.Context, ticketID int, request Ti
 		sourceEvents, sourceTotal, sourceTotalKnown, err := c.getTicketTimelineSource(ctx, ticketID, source, fetchCount)
 		if err != nil {
 			var notFound *NotFoundError
-			if !source.required && isAsNotFound(err, &notFound) {
+			var netErr *NetworkError
+			if !source.required &&
+				(isAsNotFound(err, &notFound) ||
+					(isAsNetwork(err, &netErr) && (netErr.StatusCode == http.StatusMethodNotAllowed || netErr.StatusCode == http.StatusBadRequest))) {
 				// Some GLPI profiles or deployments do not expose every optional
-				// timeline sub-item. A supported follow-up timeline remains useful.
+				// timeline sub-item. GLPI reports unsupported item types as HTTP
+				// 400 ERROR_RESOURCE_NOT_FOUND_NOR_COMMONDBTM (not 404), so treat
+				// 400/405 on optional sources like not-found and keep the
+				// supported follow-up timeline.
 				continue
 			}
 			return nil, err

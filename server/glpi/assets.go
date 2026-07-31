@@ -2,6 +2,8 @@ package glpi
 
 import (
 	"context"
+	"net/http"
+	"net/url"
 	"strconv"
 )
 
@@ -40,6 +42,7 @@ type AssetFilter struct {
 	// NameQuery, when set, restricts results to assets whose name contains it.
 	NameQuery string
 	Limit     int
+	Page      int // 1-based page; 0 or 1 = first page
 }
 
 // AssetSummary is a compact asset row returned by the search engine.
@@ -96,6 +99,7 @@ func (c *Client) SearchAssets(ctx context.Context, filter AssetFilter) ([]AssetS
 		Criteria:     criteria,
 		ForceDisplay: display,
 		Limit:        filter.Limit,
+		Page:         filter.Page,
 	})
 	if err != nil {
 		return nil, 0, err
@@ -113,4 +117,50 @@ func (c *Client) SearchAssets(ctx context.Context, filter AssetFilter) ([]AssetS
 		summaries = append(summaries, summary)
 	}
 	return summaries, result.TotalCount, nil
+}
+
+// AssetDetail is a normalized single-asset view with human-readable dropdown
+// labels (manufacturer, model, location, users) resolved by GLPI.
+type AssetDetail struct {
+	ID           int    `json:"id"`
+	ItemType     string `json:"itemtype"`
+	Name         string `json:"name"`
+	Serial       string `json:"serial"`
+	OtherSerial  string `json:"otherserial"`
+	Manufacturer string `json:"manufacturer"`
+	Model        string `json:"model"`
+	Location     string `json:"location"`
+	User         string `json:"user"`
+	TechUser     string `json:"tech_user"`
+	State        string `json:"state"`
+	WarrantyDate string `json:"warranty_date"`
+	Notes        string `json:"notes"`
+}
+
+// GetAsset retrieves a single asset of the given GLPI item type with its
+// dropdown relations expanded to human-readable labels.
+func (c *Client) GetAsset(ctx context.Context, itemType string, id int) (*AssetDetail, error) {
+	values := url.Values{}
+	values.Set("expand_dropdowns", "true")
+
+	var raw map[string]interface{}
+	if err := c.doRequest(ctx, http.MethodGet, "/apirest.php/"+itemType+"/"+strconv.Itoa(id), values, nil, &raw); err != nil {
+		return nil, err
+	}
+
+	return &AssetDetail{
+		ID:           asInt(raw["id"]),
+		ItemType:     itemType,
+		Name:         asString(raw["name"]),
+		Serial:       asString(raw["serial"]),
+		OtherSerial:  asString(raw["otherserial"]),
+		Manufacturer: dropdownName(raw["manufacturers_id"]),
+		Model:        dropdownName(raw["models_id"]),
+		Location:     dropdownName(raw["locations_id"]),
+		User:         dropdownName(raw["users_id"]),
+		TechUser:     dropdownName(raw["users_id_tech"]),
+		State:        dropdownName(raw["states_id"]),
+		WarrantyDate: asString(raw["warranty_date"]),
+		Notes:        asString(raw["notes"]),
+	}, nil
 }

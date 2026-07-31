@@ -21,6 +21,7 @@ const (
 	ticketFieldTechnician = 5
 	ticketFieldStatus     = 12
 	ticketFieldOpenDate   = 15
+	ticketFieldDueDate    = 18
 	ticketFieldDateMod    = 19
 
 	// User search options.
@@ -45,6 +46,7 @@ type searchQuery struct {
 	Sort         int
 	Order        string
 	Limit        int
+	Page         int // 1-based page; range becomes (page-1)*limit .. page*limit-1
 }
 
 type searchResponse struct {
@@ -79,7 +81,11 @@ func (c *Client) runSearch(ctx context.Context, q searchQuery) (*searchResponse,
 	if limit <= 0 {
 		limit = 15
 	}
-	values.Set("range", "0-"+strconv.Itoa(limit-1))
+	start := 0
+	if q.Page > 1 {
+		start = (q.Page - 1) * limit
+	}
+	values.Set("range", strconv.Itoa(start)+"-"+strconv.Itoa(start+limit-1))
 
 	if q.Sort > 0 {
 		values.Set("sort", strconv.Itoa(q.Sort))
@@ -100,10 +106,17 @@ func (c *Client) runSearch(ctx context.Context, q searchQuery) (*searchResponse,
 
 // TicketFilter describes which tickets to look up.
 type TicketFilter struct {
-	RequesterID int
-	AssigneeID  int
-	TitleQuery  string
-	Limit       int
+	RequesterID     int
+	AssigneeID      int
+	TitleQuery      string
+	Status          int // exact status match; 0 = any
+	StatusBelow     int // status < value (e.g. 5 = all open statuses 1-4); 0 = disabled
+	PriorityAtLeast int // priority >= value; 0 = disabled
+	DueDateBefore   string // due_date < value (YYYY-MM-DD); empty = disabled
+	Sort            int // search option ID; 0 = default (date modified)
+	Order           string // "ASC" or "DESC"; empty = DESC
+	Limit           int
+	Page            int // 1-based page; 0 or 1 = first page
 }
 
 // TicketSummary is a compact ticket row returned by the search engine.
@@ -140,6 +153,36 @@ func (c *Client) SearchTickets(ctx context.Context, filter TicketFilter) ([]Tick
 			Value:      filter.TitleQuery,
 		})
 	}
+	if filter.Status > 0 {
+		criteria = append(criteria, searchCriterion{
+			Field:      strconv.Itoa(ticketFieldStatus),
+			SearchType: "equals",
+			Value:      strconv.Itoa(filter.Status),
+		})
+	}
+	if filter.StatusBelow > 0 {
+		// "lessthan" captures every open status (1-4 when StatusBelow is 5).
+		criteria = append(criteria, searchCriterion{
+			Field:      strconv.Itoa(ticketFieldStatus),
+			SearchType: "lessthan",
+			Value:      strconv.Itoa(filter.StatusBelow),
+		})
+	}
+	if filter.PriorityAtLeast > 0 {
+		// "morethan" is strict, so subtract 1 to express ">= value".
+		criteria = append(criteria, searchCriterion{
+			Field:      strconv.Itoa(ticketFieldPriority),
+			SearchType: "morethan",
+			Value:      strconv.Itoa(filter.PriorityAtLeast - 1),
+		})
+	}
+	if filter.DueDateBefore != "" {
+		criteria = append(criteria, searchCriterion{
+			Field:      strconv.Itoa(ticketFieldDueDate),
+			SearchType: "lessthan",
+			Value:      filter.DueDateBefore,
+		})
+	}
 	if len(criteria) == 0 {
 		// Match everything: id > 0.
 		criteria = append(criteria, searchCriterion{
@@ -149,15 +192,25 @@ func (c *Client) SearchTickets(ctx context.Context, filter TicketFilter) ([]Tick
 		})
 	}
 
+	sortField := filter.Sort
+	if sortField == 0 {
+		sortField = ticketFieldDateMod
+	}
+	order := filter.Order
+	if order == "" {
+		order = "DESC"
+	}
+
 	result, err := c.runSearch(ctx, searchQuery{
 		ItemType: "Ticket",
 		Criteria: criteria,
 		ForceDisplay: []int{
 			fieldID, fieldName, ticketFieldStatus, ticketFieldPriority, ticketFieldOpenDate,
 		},
-		Sort:  ticketFieldDateMod,
-		Order: "DESC",
+		Sort:  sortField,
+		Order: order,
 		Limit: filter.Limit,
+		Page:  filter.Page,
 	})
 	if err != nil {
 		return nil, 0, err
@@ -240,4 +293,79 @@ func asInt(v interface{}) int {
 	default:
 		return 0
 	}
+}
+
+// CategorySummary is a compact GLPI ITIL category row.
+type CategorySummary struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
+// SearchITILCategories searches GLPI ITIL categories, optionally by name.
+func (c *Client) SearchITILCategories(ctx context.Context, query string, limit int) ([]CategorySummary, int, error) {
+	if limit <= 0 {
+		limit = 15
+	}
+
+	var criteria []searchCriterion
+	if query != "" {
+		criteria = append(criteria, searchCriterion{
+			Field:      strconv.Itoa(fieldName),
+			SearchType: "contains",
+			Value:      query,
+		})
+	}
+
+	result, err := c.runSearch(ctx, searchQuery{
+		ItemType:     "ITILCategory",
+		Criteria:     criteria,
+		ForceDisplay: []int{fieldID, fieldName},
+		Sort:         fieldName,
+		Order:        "ASC",
+		Limit:        limit,
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+
+	categories := make([]CategorySummary, 0, len(result.Data))
+	for _, row := range result.Data {
+		categories = append(categories, CategorySummary{
+			ID:   asInt(row[strconv.Itoa(fieldID)]),
+			Name: asString(row[strconv.Itoa(fieldName)]),
+		})
+	}
+	return categories, result.TotalCount, nil
+}
+
+// dropdownName extracts the human-readable name from a GLPI dropdown object
+// returned when expand_dropdowns=true (relation fields become {id, name}).
+func dropdownName(v interface{}) string {
+	m, ok := v.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	return asString(m["name"])
+}
+
+// dropdownID extracts the numeric ID from a GLPI dropdown value, which is
+// either a plain number or an {id, name} object under expand_dropdowns.
+func dropdownID(v interface{}) int {
+	if m, ok := v.(map[string]interface{}); ok {
+		return asInt(m["id"])
+	}
+	return asInt(v)
+}
+
+// firstKnown returns the value of the first key present with a non-empty
+// string representation.
+func firstKnown(raw map[string]interface{}, keys ...string) interface{} {
+	for _, key := range keys {
+		if value, ok := raw[key]; ok {
+			if asString(value) != "" {
+				return value
+			}
+		}
+	}
+	return ""
 }

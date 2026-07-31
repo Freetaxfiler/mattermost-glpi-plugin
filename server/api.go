@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Freetaxfiler/mattermost-glpi-plugin/server/commands"
 	"github.com/Freetaxfiler/mattermost-glpi-plugin/server/glpi"
 )
 
@@ -43,6 +44,16 @@ func (p *Plugin) apiAuth(r *http.Request) (string, error) {
 
 // handleAPI dispatches /api/v1/* requests.
 func (p *Plugin) handleAPI(w http.ResponseWriter, r *http.Request) {
+	// Every /api/v1 endpoint exposes or modifies user data, so require an
+	// authenticated Mattermost session on all of them. Unauthenticated
+	// callers must not reach ticket, asset, knowledge-base, or configuration
+	// data. (Webhooks, slash commands, and dialog submissions are routed
+	// outside this handler and are unaffected.)
+	if _, err := p.apiAuth(r); err != nil {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
 	// Strip the /api/v1 prefix
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1")
 	path = strings.TrimPrefix(path, "/")
@@ -60,12 +71,38 @@ func (p *Plugin) handleAPI(w http.ResponseWriter, r *http.Request) {
 		p.apiStatus(w, r)
 	case "config":
 		p.apiConfig(w, r)
+	case "system":
+		p.apiSystem(w, r)
+	case "dashboard":
+		p.apiDashboard(w, r)
+	case "categories":
+		p.apiCategories(w, r)
 	case "tickets":
 		p.apiTickets(w, r, parts)
 	case "assets":
-		p.apiAssets(w, r)
+		if len(parts) >= 3 {
+			p.apiAssetDetail(w, r, parts[1], parts[2])
+		} else {
+			p.apiAssets(w, r)
+		}
 	case "knowledge":
-		p.apiKnowledge(w, r)
+		switch {
+		case len(parts) >= 2 && parts[1] == "categories":
+			p.apiKnowledgeCategories(w, r)
+		case len(parts) >= 2:
+			p.apiKnowledgeArticle(w, r, parts[1])
+		default:
+			p.apiKnowledge(w, r)
+		}
+	case "notifications":
+		switch {
+		case len(parts) >= 3 && parts[2] == "read":
+			p.apiNotificationRead(w, r, parts[1])
+		case len(parts) >= 3 && parts[2] == "dismiss":
+			p.apiNotificationDismiss(w, r, parts[1])
+		default:
+			p.apiNotifications(w, r)
+		}
 	case "user":
 		p.apiUser(w, r)
 	default:
@@ -168,6 +205,18 @@ func (p *Plugin) apiTickets(w http.ResponseWriter, r *http.Request, parts []stri
 					writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 				}
 				return
+			case "documents":
+				// /api/v1/tickets/{id}/documents or /api/v1/tickets/{id}/documents/{docId}
+				if r.Method == http.MethodGet {
+					if len(parts) >= 4 {
+						p.apiDownloadDocument(w, r, ticketID, parts[3])
+					} else {
+						p.apiListDocuments(w, r, ticketID)
+					}
+				} else {
+					writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+				}
+				return
 			default:
 				writeError(w, http.StatusNotFound, "unknown action: "+parts[2])
 				return
@@ -226,6 +275,20 @@ func (p *Plugin) apiListTickets(w http.ResponseWriter, r *http.Request) {
 	var glpiFilter glpi.TicketFilter
 	glpiFilter.Limit = limit
 
+	if s := q.Get("status"); s != "" {
+		if status, err := strconv.Atoi(s); err == nil && status > 0 {
+			glpiFilter.Status = status
+		}
+	}
+	if s := q.Get("sort"); s != "" {
+		if sortField, err := strconv.Atoi(s); err == nil && sortField > 0 {
+			glpiFilter.Sort = sortField
+		}
+	}
+	if order := q.Get("order"); order == "ASC" || order == "DESC" {
+		glpiFilter.Order = order
+	}
+
 	switch filterType {
 	case "my":
 		glpiUserID, err := p.GetGLPIUserID(uid)
@@ -279,6 +342,7 @@ func (p *Plugin) apiCreateTicket(w http.ResponseWriter, r *http.Request) {
 		Priority   int    `json:"priority"`
 		Urgency    int    `json:"urgency"`
 		CategoryID int    `json:"category_id"`
+		Type       int    `json:"type"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -321,6 +385,7 @@ func (p *Plugin) apiCreateTicket(w http.ResponseWriter, r *http.Request) {
 		Content:        strings.TrimSpace(req.Content),
 		Priority:       req.Priority,
 		Urgency:        req.Urgency,
+		Type:           req.Type,
 		ITILCategoryID: categoryID,
 		EntityID:       entityID,
 		RequesterID:    requesterID,
@@ -335,6 +400,7 @@ func (p *Plugin) apiCreateTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	p.recordTicketCreatedNotification(result.ID, createReq.Name)
 	writeOK(w, result)
 }
 
@@ -488,6 +554,16 @@ func (p *Plugin) apiGetTimeline(w http.ResponseWriter, r *http.Request, ticketID
 		return
 	}
 
+	// Private timeline events are only exposed to system administrators to
+	// prevent leaking confidential follow-ups through the shared GLPI API
+	// account. handleAPI has already authenticated the request, so apiAuth
+	// here only recovers the user ID for the role check.
+	if uid, err := p.apiAuth(r); err == nil && !p.IsSystemAdmin(uid) {
+		timeline.Events = commands.VisibleTimelineEvents(timeline.Events, false)
+		timeline.Total = len(timeline.Events)
+		timeline.HasMore = false
+	}
+
 	writeOK(w, timeline)
 }
 
@@ -571,6 +647,10 @@ func (p *Plugin) apiAssets(w http.ResponseWriter, r *http.Request) {
 	if l, err := strconv.Atoi(q.Get("per_page")); err == nil && l > 0 && l <= 100 {
 		limit = l
 	}
+	page := 1
+	if p, err := strconv.Atoi(q.Get("page")); err == nil && p > 0 {
+		page = p
+	}
 
 	client := p.GetGLPIClient()
 	if client == nil {
@@ -582,6 +662,7 @@ func (p *Plugin) apiAssets(w http.ResponseWriter, r *http.Request) {
 		ItemType:  itemType,
 		NameQuery: search,
 		Limit:     limit,
+		Page:      page,
 	}
 
 	if search == "" && glpi.SupportsUserFilter(itemType) {
@@ -614,14 +695,60 @@ func (p *Plugin) apiKnowledge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query := r.URL.Query().Get("q")
+	q := r.URL.Query()
+	query := q.Get("q")
 	if query == "" {
 		writeError(w, http.StatusBadRequest, "search query (q) is required")
 		return
 	}
 
+	categoryID := 0
+	if c := q.Get("category"); c != "" {
+		if id, err := strconv.Atoi(c); err == nil && id > 0 {
+			categoryID = id
+		}
+	}
+
 	limit := 15
-	if l, err := strconv.Atoi(r.URL.Query().Get("per_page")); err == nil && l > 0 && l <= 100 {
+	if l, err := strconv.Atoi(q.Get("per_page")); err == nil && l > 0 && l <= 100 {
+		limit = l
+	}
+	page := 1
+	if pn, err := strconv.Atoi(q.Get("page")); err == nil && pn > 0 {
+		page = pn
+	}
+
+	client := p.GetGLPIClient()
+	if client == nil {
+		writeError(w, http.StatusServiceUnavailable, "glpi client not initialized")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	articles, total, err := client.SearchKnowledge(ctx, query, categoryID, limit, page)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "knowledge search failed: "+err.Error())
+		return
+	}
+
+	writeOK(w, map[string]interface{}{
+		"articles": articles,
+		"total":    total,
+		"count":    len(articles),
+	})
+}
+
+// apiKnowledgeCategories lists knowledge base categories for the KB filter.
+func (p *Plugin) apiKnowledgeCategories(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	limit := 100
+	if l, err := strconv.Atoi(r.URL.Query().Get("per_page")); err == nil && l > 0 && l <= 200 {
 		limit = l
 	}
 
@@ -634,16 +761,16 @@ func (p *Plugin) apiKnowledge(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	articles, total, err := client.SearchKnowledge(ctx, query, limit)
+	categories, total, err := client.SearchKnowledgeBaseCategories(ctx, limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "knowledge search failed: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "knowledge category search failed: "+err.Error())
 		return
 	}
 
 	writeOK(w, map[string]interface{}{
-		"articles": articles,
-		"total":    total,
-		"count":    len(articles),
+		"categories": categories,
+		"total":      total,
+		"count":      len(categories),
 	})
 }
 
@@ -680,4 +807,258 @@ func (p *Plugin) apiUser(w http.ResponseWriter, r *http.Request) {
 		"is_system_admin": p.IsSystemAdmin(uid),
 	}
 	writeOK(w, resp)
+}
+
+// ---------- /api/v1/system ----------
+
+// apiSystem returns plugin runtime information for the Settings page:
+// version, retry-queue configuration, and webhook status. GLPI connectivity is
+// reported by the status endpoint to avoid a duplicate health-check round trip.
+func (p *Plugin) apiSystem(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	config := p.currentConfiguration()
+
+	retryWorkers := 1
+	retryMaxAttempts := 5
+	retryBackoff := int64(2)
+	if p.retryQueue != nil {
+		p.retryQueue.mu.Lock()
+		retryWorkers = p.retryQueue.workerCount
+		retryMaxAttempts = p.retryQueue.maxAttempts
+		retryBackoff = int64(p.retryQueue.backoffBase.Seconds())
+		p.retryQueue.mu.Unlock()
+	}
+
+	webhookConfigured := config != nil && strings.TrimSpace(config.WebhookSecret) != ""
+
+	writeOK(w, map[string]interface{}{
+		"plugin_version": commands.PluginVersion,
+		"retry_queue": map[string]interface{}{
+			"workers":      retryWorkers,
+			"max_attempts": retryMaxAttempts,
+			"backoff_base": retryBackoff,
+		},
+		"webhook_configured": webhookConfigured,
+	})
+}
+
+// ---------- /api/v1/dashboard ----------
+
+// apiDashboard aggregates ticket statistics for the dashboard. Counts come
+// from GLPI search totals; a count of -1 means that search failed.
+func (p *Plugin) apiDashboard(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	uid, _ := p.apiAuth(r)
+
+	client := p.GetGLPIClient()
+	if client == nil {
+		writeError(w, http.StatusServiceUnavailable, "glpi client not initialized")
+		return
+	}
+
+	glpiUserID, err := p.GetGLPIUserID(uid)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "could not resolve glpi user")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+
+	countFor := func(filter glpi.TicketFilter) int {
+		_, total, err := client.SearchTickets(ctx, filter)
+		if err != nil {
+			return -1
+		}
+		return total
+	}
+
+	openCount := countFor(glpi.TicketFilter{RequesterID: glpiUserID, StatusBelow: glpi.StatusSolved, Limit: 1})
+	assignedCount := countFor(glpi.TicketFilter{AssigneeID: glpiUserID, StatusBelow: glpi.StatusSolved, Limit: 1})
+	resolvedCount := countFor(glpi.TicketFilter{RequesterID: glpiUserID, Status: glpi.StatusSolved, Limit: 1})
+	pendingCount := countFor(glpi.TicketFilter{RequesterID: glpiUserID, Status: glpi.StatusPending, Limit: 1})
+	closedCount := countFor(glpi.TicketFilter{RequesterID: glpiUserID, Status: glpi.StatusClosed, Limit: 1})
+	criticalCount := countFor(glpi.TicketFilter{RequesterID: glpiUserID, PriorityAtLeast: 5, Limit: 1})
+	today := time.Now().Format("2006-01-02")
+	overdueCount := countFor(glpi.TicketFilter{RequesterID: glpiUserID, StatusBelow: glpi.StatusSolved, DueDateBefore: today, Limit: 1})
+
+	recent, _, err := client.SearchTickets(ctx, glpi.TicketFilter{RequesterID: glpiUserID, Limit: 5})
+	if err != nil {
+		recent = nil
+	}
+
+	writeOK(w, map[string]interface{}{
+		"open":     openCount,
+		"assigned": assignedCount,
+		"resolved": resolvedCount,
+		"pending":  pendingCount,
+		"closed":   closedCount,
+		"critical": criticalCount,
+		"overdue":  overdueCount,
+		"recent":   recent,
+	})
+}
+
+// ---------- /api/v1/categories ----------
+
+func (p *Plugin) apiCategories(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	q := r.URL.Query()
+	limit := 50
+	if l, err := strconv.Atoi(q.Get("per_page")); err == nil && l > 0 && l <= 200 {
+		limit = l
+	}
+
+	client := p.GetGLPIClient()
+	if client == nil {
+		writeError(w, http.StatusServiceUnavailable, "glpi client not initialized")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	categories, total, err := client.SearchITILCategories(ctx, q.Get("q"), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "category search failed: "+err.Error())
+		return
+	}
+
+	writeOK(w, map[string]interface{}{
+		"categories": categories,
+		"total":      total,
+		"count":      len(categories),
+	})
+}
+
+// ---------- /api/v1/knowledge/{id} ----------
+
+func (p *Plugin) apiKnowledgeArticle(w http.ResponseWriter, r *http.Request, idStr string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	id, err := strconv.Atoi(idStr)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid article id")
+		return
+	}
+
+	client := p.GetGLPIClient()
+	if client == nil {
+		writeError(w, http.StatusServiceUnavailable, "glpi client not initialized")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	article, err := client.GetKnowbaseItem(ctx, id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "article not found")
+		return
+	}
+
+	writeOK(w, article)
+}
+
+// ---------- /api/v1/assets/{itemType}/{id} ----------
+
+func (p *Plugin) apiAssetDetail(w http.ResponseWriter, r *http.Request, itemType, idStr string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	id, err := strconv.Atoi(idStr)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid asset id")
+		return
+	}
+
+	client := p.GetGLPIClient()
+	if client == nil {
+		writeError(w, http.StatusServiceUnavailable, "glpi client not initialized")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	asset, err := client.GetAsset(ctx, itemType, id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "asset not found")
+		return
+	}
+
+	writeOK(w, asset)
+}
+
+// ---------- /api/v1/tickets/{id}/documents ----------
+
+func (p *Plugin) apiListDocuments(w http.ResponseWriter, r *http.Request, ticketID int) {
+	client := p.GetGLPIClient()
+	if client == nil {
+		writeError(w, http.StatusServiceUnavailable, "glpi client not initialized")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	docs, err := client.ListTicketDocuments(ctx, ticketID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "document list failed: "+err.Error())
+		return
+	}
+
+	writeOK(w, map[string]interface{}{
+		"documents": docs,
+		"count":     len(docs),
+	})
+}
+
+// apiDownloadDocument proxies a GLPI document's raw content to the browser.
+// handleAPI has already authenticated the request.
+func (p *Plugin) apiDownloadDocument(w http.ResponseWriter, r *http.Request, ticketID int, docIDStr string) {
+	docID, err := strconv.Atoi(docIDStr)
+	if err != nil || docID <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid document id")
+		return
+	}
+
+	client := p.GetGLPIClient()
+	if client == nil {
+		writeError(w, http.StatusServiceUnavailable, "glpi client not initialized")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	data, contentType, err := client.GetDocumentContent(ctx, docID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "document download failed")
+		return
+	}
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Disposition", "attachment")
+	_, _ = w.Write(data)
 }

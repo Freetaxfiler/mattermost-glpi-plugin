@@ -1,23 +1,41 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../api';
-import type { StatusResponse, ConfigResponse } from '../types';
+import type { StatusResponse, ConfigResponse, SystemInfo } from '../types';
 import Loading from './common/Loading';
 
 export default function Settings() {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [config, setConfig] = useState<ConfigResponse | null>(null);
+  const [system, setSystem] = useState<SystemInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([api.getStatus(), api.getConfig()])
-      .then(([s, c]) => {
+    Promise.all([api.getStatus(), api.getConfig(), api.getSystem()])
+      .then(([s, c, sy]) => {
         setStatus(s);
         setConfig(c);
+        setSystem(sy);
       })
       .catch((err: unknown) => setError(err instanceof Error ? err.message : 'Failed to load settings'))
       .finally(() => setLoading(false));
   }, []);
+
+  const runConnectionTest = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const s = await api.getStatus();
+      setStatus(s);
+      setTestResult(s.glpi_online ? `Connected — GLPI ${s.glpi_version || 'unknown version'}` : 'Disconnected — check the GLPI URL and tokens');
+    } catch (err: unknown) {
+      setTestResult(err instanceof Error ? `Connection failed: ${err.message}` : 'Connection failed');
+    } finally {
+      setTesting(false);
+    }
+  };
 
   if (loading) return <Loading text="Loading settings..." />;
 
@@ -32,7 +50,7 @@ export default function Settings() {
           </div>
         )}
 
-        {/* Status */}
+        {/* Connection Status */}
         <div className="glpi-section-title" style={{ marginTop: 16 }}>Connection Status</div>
         <div className="glpi-card">
           <div className="glpi-flex glpi-flex-between glpi-flex-center">
@@ -50,7 +68,17 @@ export default function Settings() {
           )}
           <div className="glpi-flex glpi-flex-between glpi-flex-center glpi-mt-10">
             <span style={{ fontSize: 13 }}>Plugin Version</span>
-            <span style={{ fontSize: 13 }}>v{status?.plugin_version || '0.2.0'}</span>
+            <span style={{ fontSize: 13 }}>v{system?.plugin_version || status?.plugin_version || '0.2.0'}</span>
+          </div>
+          <div className="glpi-flex glpi-gap-8 glpi-mt-10">
+            <button
+              className="glpi-btn glpi-btn-primary glpi-btn-sm"
+              onClick={runConnectionTest}
+              disabled={testing}
+            >
+              {testing ? 'Testing...' : 'Test Connection'}
+            </button>
+            {testResult && <span style={{ fontSize: 13 }}>{testResult}</span>}
           </div>
         </div>
 
@@ -84,6 +112,21 @@ export default function Settings() {
           <div className="glpi-flex glpi-flex-between glpi-flex-center glpi-mt-10">
             <span style={{ fontSize: 13 }}>Debug Logging</span>
             <span style={{ fontSize: 13 }}>{config?.enable_debug ? 'Enabled' : 'Disabled'}</span>
+          </div>
+        </div>
+
+        {/* Runtime */}
+        <div className="glpi-section-title" style={{ marginTop: 16 }}>Runtime</div>
+        <div className="glpi-card">
+          <div className="glpi-flex glpi-flex-between glpi-flex-center">
+            <span style={{ fontSize: 13 }}>Webhook</span>
+            <span style={{ fontSize: 13 }}>{system?.webhook_configured ? 'Configured' : 'Not configured'}</span>
+          </div>
+          <div className="glpi-flex glpi-flex-between glpi-flex-center glpi-mt-10">
+            <span style={{ fontSize: 13 }}>Retry Queue</span>
+            <span style={{ fontSize: 13 }}>
+              {system ? `${system.retry_queue.workers} worker(s), max ${system.retry_queue.max_attempts} attempts` : '—'}
+            </span>
           </div>
         </div>
 

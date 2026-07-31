@@ -8,9 +8,60 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
+
+// DocumentInfo is a compact document row attached to a ticket.
+type DocumentInfo struct {
+	ID       int    `json:"id"`
+	Name     string `json:"name"`
+	Filename string `json:"filename"`
+	MimeType string `json:"mime_type"`
+	Size     int    `json:"size"`
+}
+
+// ListTicketDocuments lists the documents attached to a ticket.
+func (c *Client) ListTicketDocuments(ctx context.Context, ticketID int) ([]DocumentInfo, error) {
+	var rows []map[string]interface{}
+	if err := c.doRequest(ctx, http.MethodGet, "/apirest.php/Ticket/"+strconv.Itoa(ticketID)+"/Document_Item", nil, nil, &rows); err != nil {
+		return nil, err
+	}
+
+	seen := make(map[int]bool)
+	docs := make([]DocumentInfo, 0, len(rows))
+	for _, row := range rows {
+		docID := asInt(row["documents_id"])
+		if docID == 0 || seen[docID] {
+			continue
+		}
+		seen[docID] = true
+
+		var meta map[string]interface{}
+		if err := c.doRequest(ctx, http.MethodGet, "/apirest.php/Document/"+strconv.Itoa(docID), nil, nil, &meta); err != nil {
+			// A single unresolvable document should not fail the whole list.
+			continue
+		}
+		docs = append(docs, DocumentInfo{
+			ID:       docID,
+			Name:     asString(meta["name"]),
+			Filename: asString(meta["filename"]),
+			MimeType: asString(meta["mime"]),
+			Size:     asInt(meta["file_size"]),
+		})
+	}
+	return docs, nil
+}
+
+// GetDocumentContent downloads a document's raw content from GLPI, returning
+// the bytes and the GLPI-reported content type.
+func (c *Client) GetDocumentContent(ctx context.Context, docID int) ([]byte, string, error) {
+	values := url.Values{}
+	values.Set("alt", "media")
+	return c.doRequestRaw(ctx, http.MethodGet, "/apirest.php/Document/"+strconv.Itoa(docID), values)
+}
 
 // DefaultAllowedMIMEs returns the default set of allowed MIME types for file uploads.
 func DefaultAllowedMIMEs() map[string]bool {

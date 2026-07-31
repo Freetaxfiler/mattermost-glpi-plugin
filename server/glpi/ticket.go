@@ -3,6 +3,7 @@ package glpi
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 )
@@ -183,4 +184,66 @@ func (c *Client) AddSolution(ctx context.Context, ticketID int, content string) 
 		},
 	}
 	return c.doRequest(ctx, http.MethodPost, "/apirest.php/ITILSolution", nil, payload, nil)
+}
+
+// TicketTemplateSummary is a compact ticket template row used for the picker.
+type TicketTemplateSummary struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
+// TicketTemplate is a full ticket template used to prefill the creation form.
+type TicketTemplate struct {
+	ID         int    `json:"id"`
+	Name       string `json:"name"`
+	Content    string `json:"content"`
+	CategoryID int    `json:"category_id"`
+	Type       int    `json:"type"`
+}
+
+// SearchTicketTemplates lists GLPI ticket templates by name.
+func (c *Client) SearchTicketTemplates(ctx context.Context, limit int) ([]TicketTemplateSummary, int, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	result, err := c.runSearch(ctx, searchQuery{
+		ItemType:     "TicketTemplate",
+		ForceDisplay: []int{fieldID, fieldName},
+		Sort:         fieldName,
+		Order:        "ASC",
+		Limit:        limit,
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+
+	templates := make([]TicketTemplateSummary, 0, len(result.Data))
+	for _, row := range result.Data {
+		templates = append(templates, TicketTemplateSummary{
+			ID:   asInt(row[strconv.Itoa(fieldID)]),
+			Name: asString(row[strconv.Itoa(fieldName)]),
+		})
+	}
+	return templates, result.TotalCount, nil
+}
+
+// GetTicketTemplate retrieves a single ticket template with its category
+// resolved to a numeric ID so the creation form can be prefilled.
+func (c *Client) GetTicketTemplate(ctx context.Context, id int) (*TicketTemplate, error) {
+	values := url.Values{}
+	values.Set("expand_dropdowns", "true")
+
+	var raw map[string]interface{}
+	if err := c.doRequest(ctx, http.MethodGet, "/apirest.php/TicketTemplate/"+strconv.Itoa(id), values, nil, &raw); err != nil {
+		return nil, err
+	}
+
+	return &TicketTemplate{
+		ID:         asInt(raw["id"]),
+		Name:       asString(raw["name"]),
+		Content:    asString(raw["content"]),
+		CategoryID: dropdownID(raw["ticketcategories_id"]),
+		Type:       asInt(raw["type"]),
+	}, nil
 }

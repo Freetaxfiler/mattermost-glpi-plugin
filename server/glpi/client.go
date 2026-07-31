@@ -53,9 +53,18 @@ type GLPIClient interface {
 
 	FindUserIDByEmail(ctx context.Context, email string) (int, error)
 	SearchAssets(ctx context.Context, filter AssetFilter) ([]AssetSummary, int, error)
-	SearchKnowledge(ctx context.Context, query string, limit int) ([]KnowledgeSummary, int, error)
+	SearchKnowledge(ctx context.Context, query string, categoryID, limit, page int) ([]KnowledgeSummary, int, error)
+	SearchKnowledgeBaseCategories(ctx context.Context, limit int) ([]KnowbaseCategorySummary, int, error)
 	GetTicketTimeline(ctx context.Context, ticketID int, request TimelinePageRequest) (*TimelinePage, error)
 	UploadDocument(ctx context.Context, filename string, data []byte, ticketID int) (int, error)
+
+	// Extended capabilities (v1.0): categories, KB article view, asset detail,
+	// and document listing/download.
+	SearchITILCategories(ctx context.Context, query string, limit int) ([]CategorySummary, int, error)
+	GetKnowbaseItem(ctx context.Context, id int) (*KnowledgeArticle, error)
+	GetAsset(ctx context.Context, itemType string, id int) (*AssetDetail, error)
+	ListTicketDocuments(ctx context.Context, ticketID int) ([]DocumentInfo, error)
+	GetDocumentContent(ctx context.Context, docID int) ([]byte, string, error)
 }
 
 // ResponseMetadata contains HTTP metadata for a successful GLPI response.
@@ -187,6 +196,84 @@ func (c *Client) doRequest(ctx context.Context, method, path string, query url.V
 // is otherwise identical to doRequest.
 func (c *Client) doRequestWithResponse(ctx context.Context, method, path string, query url.Values, body interface{}, out interface{}, metadata *ResponseMetadata) error {
 	return c.doRequestWithRetry(ctx, method, path, query, body, out, true, metadata)
+}
+
+// doRequestRaw performs an authenticated request and returns the raw response
+// body plus its content type without JSON decoding. Used for binary document
+// downloads where the body must be proxied unchanged. Re-authenticates once if
+// the cached session is rejected (401).
+func (c *Client) doRequestRaw(ctx context.Context, method, path string, query url.Values) ([]byte, string, error) {
+	if err := c.ensureSession(ctx); err != nil {
+		return nil, "", err
+	}
+
+	fullURL := c.baseURL + path
+	if len(query) > 0 {
+		fullURL += "?" + query.Encode()
+	}
+
+	buildReq := func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, method, fullURL, nil)
+		if err != nil {
+			return nil, &NetworkError{Message: "failed to build GLPI request", Err: err}
+		}
+		req.Header.Set("App-Token", c.appToken)
+		req.Header.Set("Session-Token", c.currentSession())
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Request-ID", uuidNew())
+		return req, nil
+	}
+
+	doOnce := func(req *http.Request) ([]byte, string, int, error) {
+		c.acquireRate()
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, "", 0, &NetworkError{Message: "failed to reach GLPI", Err: err}
+		}
+		bodyBytes, readErr := io.ReadAll(resp.Body)
+		contentType := resp.Header.Get("Content-Type")
+		resp.Body.Close()
+
+		if c.debugLog != nil {
+			c.debugLog("GLPI request",
+				"method", method,
+				"url", fullURL,
+				"status", resp.StatusCode,
+				"body", truncateBody(string(bodyBytes)),
+			)
+		}
+		if readErr != nil {
+			return nil, "", resp.StatusCode, &NetworkError{Message: "failed to read GLPI response body", Err: readErr, StatusCode: resp.StatusCode}
+		}
+		return bodyBytes, contentType, resp.StatusCode, nil
+	}
+
+	req, err := buildReq()
+	if err != nil {
+		return nil, "", err
+	}
+	bodyBytes, contentType, status, err := doOnce(req)
+	if err != nil {
+		return nil, "", err
+	}
+	if status == http.StatusUnauthorized {
+		c.clearSession()
+		if err := c.ensureSession(ctx); err != nil {
+			return nil, "", err
+		}
+		req2, buildErr := buildReq()
+		if buildErr != nil {
+			return nil, "", buildErr
+		}
+		bodyBytes, contentType, status, err = doOnce(req2)
+		if err != nil {
+			return nil, "", err
+		}
+	}
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		return nil, "", &NetworkError{Message: fmt.Sprintf("GLPI request failed (%d): %s", status, string(bodyBytes)), StatusCode: status}
+	}
+	return bodyBytes, contentType, nil
 }
 
 // acquireRate enforces a simple per-client rate limit by ensuring a minimum

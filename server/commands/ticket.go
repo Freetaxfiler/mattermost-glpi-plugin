@@ -231,17 +231,17 @@ func executeCloseTicket(ctx context.Context, p PluginExecutor, rest []string) (*
 
 	solution := strings.TrimSpace(strings.Join(rest[1:], " "))
 	if solution != "" {
+		// Record the solution only and let GLPI apply its own approval
+		// workflow. Forcing a status update here would bypass GLPI's ticket
+		// lifecycle (the ticket is moved to Solved/Closed by GLPI).
 		if err := client.AddSolution(ctx, id, solution); err != nil {
 			return friendlyError("Recording the solution", err), nil
 		}
+		return responseText(fmt.Sprintf("✅ Solution recorded for ticket #%d. GLPI will process the closure.", id)), nil
 	}
 
 	if err := client.UpdateTicket(ctx, id, map[string]interface{}{"status": glpi.StatusClosed}); err != nil {
 		return friendlyError("Closing the ticket", err), nil
-	}
-
-	if solution != "" {
-		return responseText(fmt.Sprintf("✅ Ticket #%d closed with a solution recorded.", id)), nil
 	}
 	return responseText(fmt.Sprintf("✅ Ticket #%d closed.", id)), nil
 }
@@ -328,10 +328,11 @@ func executeAttach(ctx context.Context, p PluginExecutor, args *model.CommandArg
 	return responseText(fmt.Sprintf("📎 Attached `%s` to ticket #%d (document #%d).", filename, id, documentID)), nil
 }
 
-// visibleTimelineEvents filters timeline events based on user role.
+// VisibleTimelineEvents filters timeline events based on user role.
 // Private events are only visible to system administrators to prevent
 // exposing confidential information through a shared GLPI API account.
-func visibleTimelineEvents(events []glpi.TimelineEvent, isSystemAdmin bool) []glpi.TimelineEvent {
+// Exported so the webapp REST timeline handler applies the same policy.
+func VisibleTimelineEvents(events []glpi.TimelineEvent, isSystemAdmin bool) []glpi.TimelineEvent {
 	if isSystemAdmin {
 		return events
 	}

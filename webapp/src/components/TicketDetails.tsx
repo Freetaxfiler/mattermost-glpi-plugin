@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import type { ViewName, Ticket, TimelinePage, TimelineEvent } from '../types';
+import type { ViewName, Ticket, TimelinePage, TimelineEvent, DocumentInfo } from '../types';
 import { api } from '../api';
 import Loading from './common/Loading';
 import ErrorState from './common/ErrorState';
@@ -9,6 +9,21 @@ import ConfirmDialog from './common/ConfirmDialog';
 interface TicketDetailsProps {
   ticketId: number;
   onNavigate: (view: ViewName) => void;
+}
+
+const PRIORITY_OPTIONS = [
+  { value: 1, label: 'Very low' },
+  { value: 2, label: 'Low' },
+  { value: 3, label: 'Medium' },
+  { value: 4, label: 'High' },
+  { value: 5, label: 'Very high' },
+];
+
+function formatBytes(bytes: number): string {
+  if (!bytes) return '—';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export default function TicketDetails({ ticketId, onNavigate }: TicketDetailsProps) {
@@ -23,6 +38,18 @@ export default function TicketDetails({ ticketId, onNavigate }: TicketDetailsPro
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
+  // Edit form
+  const [editing, setEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState('');
+  const [editPriority, setEditPriority] = useState(3);
+  const [editUrgency, setEditUrgency] = useState(3);
+  const [editImpact, setEditImpact] = useState(3);
+
+  // Attachments
+  const [documents, setDocuments] = useState<DocumentInfo[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -41,9 +68,78 @@ export default function TicketDetails({ ticketId, onNavigate }: TicketDetailsPro
     }
   }, [ticketId]);
 
+  const loadDocuments = useCallback(async () => {
+    try {
+      const r = await api.listTicketDocuments(ticketId);
+      setDocuments(r.documents);
+    } catch {
+      setDocuments([]);
+    }
+  }, [ticketId]);
+
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  useEffect(() => {
+    loadDocuments();
+  }, [loadDocuments]);
+
+  const beginEdit = () => {
+    if (!ticket) return;
+    setEditTitle(ticket.name);
+    setEditPriority(ticket.priority || 3);
+    setEditUrgency(ticket.urgency || 3);
+    setEditImpact(ticket.impact || 3);
+    setEditing(true);
+  };
+
+  const saveEdit = async () => {
+    if (!editTitle.trim()) {
+      setError('Title is required');
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      await api.updateTicket(ticketId, {
+        name: editTitle.trim(),
+        priority: editPriority,
+        urgency: editUrgency,
+        impact: editImpact,
+      });
+      setEditing(false);
+      setSuccessMsg('Ticket updated');
+      fetchData();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to update ticket');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleUpload = async (file: File | null) => {
+    if (!file) return;
+    setUploading(true);
+    setError(null);
+    try {
+      await api.attachFile(ticketId, file);
+      setSuccessMsg('Attachment added');
+      loadDocuments();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to upload attachment');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleDownload = async (doc: DocumentInfo) => {
+    try {
+      await api.downloadDocument(ticketId, doc.id, doc.filename || doc.name);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to download attachment');
+    }
+  };
 
   const handleAddComment = async () => {
     if (!commentText.trim()) return;
@@ -116,6 +212,25 @@ export default function TicketDetails({ ticketId, onNavigate }: TicketDetailsPro
     }
   };
 
+  const handleAssignToMe = async () => {
+    setSubmitting(true);
+    setError(null);
+    try {
+      const user = await api.getUser();
+      if (!user.glpi_user_id) {
+        setError('Your Mattermost account is not linked to a GLPI user');
+        return;
+      }
+      await api.updateTicket(ticketId, { _users_id_technician: user.glpi_user_id });
+      setSuccessMsg('Ticket assigned to you');
+      fetchData();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to assign ticket');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   if (loading) return <Loading text="Loading ticket..." />;
   if (error) return <ErrorState message={error} onRetry={fetchData} />;
   if (!ticket) return <ErrorState message="Ticket not found" />;
@@ -139,27 +254,94 @@ export default function TicketDetails({ ticketId, onNavigate }: TicketDetailsPro
             <div style={{ fontSize: 18, fontWeight: 600 }}>#{ticket.id}</div>
             <div style={{ fontSize: 14, fontWeight: 500, marginTop: 2 }}>{ticket.name}</div>
           </div>
-          <StatusBadge status={ticket.status} />
+          <div className="glpi-flex glpi-gap-8">
+            <StatusBadge status={ticket.status} />
+            <button
+              className="glpi-btn glpi-btn-secondary glpi-btn-sm"
+              onClick={handleAssignToMe}
+              disabled={submitting}
+            >
+              Assign to me
+            </button>
+            <button
+              className="glpi-btn glpi-btn-secondary glpi-btn-sm"
+              onClick={beginEdit}
+              disabled={submitting}
+            >
+              Edit
+            </button>
+          </div>
         </div>
 
-        <div className="glpi-card">
-          <div className="glpi-flex glpi-flex-between glpi-flex-center">
-            <span style={{ fontSize: 12, color: 'var(--center-channel-color-60)' }}>Priority</span>
-            <span style={{ fontSize: 13 }}>{['', 'Very low', 'Low', 'Medium', 'High', 'Very high'][ticket.priority] || ticket.priority}</span>
+        {editing ? (
+          <div className="glpi-card">
+            <div className="glpi-form-group">
+              <label className="glpi-label">Title</label>
+              <input
+                className="glpi-input"
+                type="text"
+                value={editTitle}
+                onChange={(e) => setEditTitle(e.target.value)}
+                maxLength={200}
+              />
+            </div>
+            <div className="glpi-form-group">
+              <label className="glpi-label">Priority</label>
+              <select className="glpi-select" value={editPriority} onChange={(e) => setEditPriority(Number(e.target.value))}>
+                {PRIORITY_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="glpi-form-group">
+              <label className="glpi-label">Urgency</label>
+              <select className="glpi-select" value={editUrgency} onChange={(e) => setEditUrgency(Number(e.target.value))}>
+                {PRIORITY_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="glpi-form-group">
+              <label className="glpi-label">Impact</label>
+              <select className="glpi-select" value={editImpact} onChange={(e) => setEditImpact(Number(e.target.value))}>
+                {PRIORITY_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="glpi-flex glpi-gap-8">
+              <button className="glpi-btn glpi-btn-primary glpi-btn-sm" onClick={saveEdit} disabled={submitting}>
+                {submitting ? 'Saving...' : 'Save'}
+              </button>
+              <button className="glpi-btn glpi-btn-secondary glpi-btn-sm" onClick={() => setEditing(false)}>
+                Cancel
+              </button>
+            </div>
           </div>
-          <div className="glpi-flex glpi-flex-between glpi-flex-center glpi-mt-10">
-            <span style={{ fontSize: 12, color: 'var(--center-channel-color-60)' }}>Urgency</span>
-            <span style={{ fontSize: 13 }}>{['', 'Very low', 'Low', 'Medium', 'High', 'Very high'][ticket.urgency] || ticket.urgency}</span>
+        ) : (
+          <div className="glpi-card">
+            <div className="glpi-flex glpi-flex-between glpi-flex-center">
+              <span style={{ fontSize: 12, color: 'var(--center-channel-color-60)' }}>Priority</span>
+              <span style={{ fontSize: 13 }}>{['', 'Very low', 'Low', 'Medium', 'High', 'Very high'][ticket.priority] || ticket.priority}</span>
+            </div>
+            <div className="glpi-flex glpi-flex-between glpi-flex-center glpi-mt-10">
+              <span style={{ fontSize: 12, color: 'var(--center-channel-color-60)' }}>Urgency</span>
+              <span style={{ fontSize: 13 }}>{['', 'Very low', 'Low', 'Medium', 'High', 'Very high'][ticket.urgency] || ticket.urgency}</span>
+            </div>
+            <div className="glpi-flex glpi-flex-between glpi-flex-center glpi-mt-10">
+              <span style={{ fontSize: 12, color: 'var(--center-channel-color-60)' }}>Impact</span>
+              <span style={{ fontSize: 13 }}>{['', 'Very low', 'Low', 'Medium', 'High', 'Very high'][ticket.impact] || ticket.impact}</span>
+            </div>
+            <div className="glpi-flex glpi-flex-between glpi-flex-center glpi-mt-10">
+              <span style={{ fontSize: 12, color: 'var(--center-channel-color-60)' }}>Date</span>
+              <span style={{ fontSize: 13 }}>{ticket.date}</span>
+            </div>
+            <div className="glpi-flex glpi-flex-between glpi-flex-center glpi-mt-10">
+              <span style={{ fontSize: 12, color: 'var(--center-channel-color-60)' }}>Last modified</span>
+              <span style={{ fontSize: 13 }}>{ticket.date_mod}</span>
+            </div>
           </div>
-          <div className="glpi-flex glpi-flex-between glpi-flex-center glpi-mt-10">
-            <span style={{ fontSize: 12, color: 'var(--center-channel-color-60)' }}>Date</span>
-            <span style={{ fontSize: 13 }}>{ticket.date}</span>
-          </div>
-          <div className="glpi-flex glpi-flex-between glpi-flex-center glpi-mt-10">
-            <span style={{ fontSize: 12, color: 'var(--center-channel-color-60)' }}>Last modified</span>
-            <span style={{ fontSize: 13 }}>{ticket.date_mod}</span>
-          </div>
-        </div>
+        )}
       </div>
 
       {/* Description */}
@@ -173,6 +355,66 @@ export default function TicketDetails({ ticketId, onNavigate }: TicketDetailsPro
           </div>
         </div>
       )}
+
+      {/* Attachments */}
+      <div className="glpi-section">
+        <div className="glpi-section-title">Attachments ({documents.length})</div>
+        <div
+          className="glpi-card"
+          style={dragOver ? { borderColor: 'var(--button-bg)', borderStyle: 'dashed' } : undefined}
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragOver(false);
+            handleUpload(e.dataTransfer.files?.[0] ?? null);
+          }}
+        >
+          {documents.length === 0 && (
+            <div className="glpi-text-small">No attachments.</div>
+          )}
+          {documents.map((doc) => (
+            <div key={doc.id} className="glpi-flex glpi-flex-between glpi-flex-center glpi-mb-10">
+              <div style={{ minWidth: 0 }}>
+                {doc.mime_type && doc.mime_type.startsWith('image/') && (
+                  <img
+                    src={`/plugins/com.ntas.glpi/api/v1/tickets/${ticketId}/documents/${doc.id}`}
+                    alt={doc.name || doc.filename}
+                    style={{ maxWidth: 80, maxHeight: 60, borderRadius: 4, display: 'block', marginBottom: 4, cursor: 'pointer' }}
+                    onClick={() => handleDownload(doc)}
+                  />
+                )}
+                <div style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {doc.name || doc.filename}
+                </div>
+                <div className="glpi-text-small">{formatBytes(doc.size)}</div>
+              </div>
+              <button
+                className="glpi-btn glpi-btn-secondary glpi-btn-sm"
+                onClick={() => handleDownload(doc)}
+              >
+                Download
+              </button>
+            </div>
+          ))}
+          <div className="glpi-mt-10">
+            <label className="glpi-btn glpi-btn-secondary glpi-btn-sm" style={{ display: 'inline-block', cursor: 'pointer' }}>
+              {uploading ? 'Uploading...' : 'Upload Attachment'}
+              <input
+                type="file"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  handleUpload(e.target.files?.[0] ?? null);
+                  e.target.value = '';
+                }}
+              />
+            </label>
+            <span className="glpi-text-small" style={{ marginLeft: 8 }}>
+              {uploading ? 'Uploading...' : 'or drag & drop a file here'}
+            </span>
+          </div>
+        </div>
+      </div>
 
       {/* Timeline */}
       {timeline && timeline.Events.length > 0 && (
@@ -237,7 +479,7 @@ export default function TicketDetails({ ticketId, onNavigate }: TicketDetailsPro
               onClick={() => setConfirmClose(true)}
               disabled={submitting}
             >
-              Close with Solution
+              Record Solution
             </button>
             {isSolved && (
               <button
@@ -290,18 +532,16 @@ export default function TicketDetails({ ticketId, onNavigate }: TicketDetailsPro
 
       {confirmClose && (
         <ConfirmDialog
-          title="Close Ticket"
-          message={solutionText.trim() ? 'Record the solution and close this ticket?' : 'Close this ticket without a solution?'}
-          confirmText="Close"
+          title={solutionText.trim() ? 'Record Solution' : 'Close Ticket'}
+          message={solutionText.trim() ? 'Record the solution and let GLPI process the ticket closure?' : 'Close this ticket without a solution?'}
+          confirmText={solutionText.trim() ? 'Record Solution' : 'Close'}
           onConfirm={() => {
             if (solutionText.trim()) {
               api.addSolution(ticketId, solutionText.trim()).then(() => {
-                api.updateTicket(ticketId, { status: 6 }).then(() => {
-                  setSolutionText('');
-                  setSuccessMsg('Ticket closed with solution');
-                  fetchData();
-                });
-              }).catch(() => setError('Failed to close ticket'));
+                setSolutionText('');
+                setSuccessMsg('Solution recorded — GLPI will process the closure');
+                fetchData();
+              }).catch(() => setError('Failed to record solution'));
             } else {
               handleClose();
             }

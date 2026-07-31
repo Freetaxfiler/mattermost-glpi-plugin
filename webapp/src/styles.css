@@ -73,6 +73,18 @@
   color: var(--button-color, #fff);
 }
 
+.glpi-notif-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: var(--error-text-color, #d63c3c);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
 .glpi-content {
   flex: 1;
   overflow-y: auto;
@@ -322,21 +334,6 @@
 
 @keyframes glpi-spin {
   to { transform: rotate(360deg); }
-}
-
-/* Skeleton loader */
-.glpi-skeleton {
-  background: linear-gradient(90deg, var(--center-channel-bg-10, #eee) 25%, var(--center-channel-bg-20, #ddd) 50%, var(--center-channel-bg-10, #eee) 75%);
-  background-size: 200% 100%;
-  animation: glpi-shimmer 1.5s infinite;
-  border-radius: 4px;
-  height: 14px;
-  margin-bottom: 8px;
-}
-
-@keyframes glpi-shimmer {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
 }
 
 /* Empty state */

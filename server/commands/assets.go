@@ -121,7 +121,7 @@ func executeKnowledge(ctx context.Context, p PluginExecutor, rest []string) (*mo
 	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
 	defer cancel()
 
-	articles, total, err := client.SearchKnowledge(ctx, query, listLimit)
+	articles, total, err := client.SearchKnowledge(ctx, query, 0, listLimit, 1)
 	if err != nil {
 		return friendlyError("Searching the knowledge base", err), nil
 	}

@@ -15,12 +15,12 @@ func TestVisibleTimelineEvents(t *testing.T) {
 		{ID: 2, Kind: glpi.TimelineFollowup, IsPrivate: true},
 	}
 
-	userEvents := visibleTimelineEvents(events, false)
+	userEvents := VisibleTimelineEvents(events, false)
 	if len(userEvents) != 1 || userEvents[0].ID != 1 {
 		t.Fatalf("regular users must not receive private timeline events: %+v", userEvents)
 	}
 
-	adminEvents := visibleTimelineEvents(events, true)
+	adminEvents := VisibleTimelineEvents(events, true)
 	if len(adminEvents) != 2 {
 		t.Fatalf("system administrators should receive all timeline events: %+v", adminEvents)
 	}
@@ -125,7 +125,17 @@ func (c *workflowTestClient) FindUserIDByEmail(context.Context, string) (int, er
 func (c *workflowTestClient) SearchAssets(context.Context, glpi.AssetFilter) ([]glpi.AssetSummary, int, error) {
 	return nil, 0, nil
 }
-func (c *workflowTestClient) SearchKnowledge(context.Context, string, int) ([]glpi.KnowledgeSummary, int, error) {
+func (c *workflowTestClient) SearchKnowledge(context.Context, string, int, int, int) ([]glpi.KnowledgeSummary, int, error) {
+	return nil, 0, nil
+}
+func (c *workflowTestClient) SearchKnowledgeBaseCategories(context.Context, int) ([]glpi.KnowbaseCategorySummary, int, error) {
 	return nil, 0, nil
 }
 func (c *workflowTestClient) UploadDocument(context.Context, string, []byte, int) (int, error) { return 0, nil }
+func (c *workflowTestClient) SearchITILCategories(context.Context, string, int) ([]glpi.CategorySummary, int, error) {
+	return nil, 0, nil
+}
+func (c *workflowTestClient) GetKnowbaseItem(context.Context, int) (*glpi.KnowledgeArticle, error) { return nil, nil }
+func (c *workflowTestClient) GetAsset(context.Context, string, int) (*glpi.AssetDetail, error) { return nil, nil }
+func (c *workflowTestClient) ListTicketDocuments(context.Context, int) ([]glpi.DocumentInfo, error) { return nil, nil }
+func (c *workflowTestClient) GetDocumentContent(context.Context, int) ([]byte, string, error) { return nil, "", nil }

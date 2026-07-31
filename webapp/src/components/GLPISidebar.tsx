@@ -27,6 +27,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'dashboard', label: 'Dashboard' },
   { id: 'create-ticket', label: 'New Ticket' },
   { id: 'my-tickets', label: 'My Tickets' },
+  { id: 'assigned-tickets', label: 'Assigned' },
   { id: 'search', label: 'Search' },
   { id: 'assets', label: 'Assets' },
   { id: 'knowledge-base', label: 'KB' },
@@ -39,6 +40,8 @@ export default function GLPISidebar({ onClose }: GLPISidebarProps) {
   const [selectedTicketId, setSelectedTicketId] = useState<number | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [notificationUnread, setNotificationUnread] = useState(0);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     api.getStatus()
@@ -47,9 +50,34 @@ export default function GLPISidebar({ onClose }: GLPISidebarProps) {
       .finally(() => setLoading(false));
   }, []);
 
+  const loadUnread = useCallback(() => {
+    api.getNotifications().then((r) => setNotificationUnread(r.unread)).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    loadUnread();
+  }, [loadUnread]);
+
+  // Live refresh: the plugin bootstrap dispatches a window event when the
+  // server pushes a notification WebSocket event. Refresh the badge and, on
+  // the dashboard/notifications views, remount the content so it re-fetches.
+  useEffect(() => {
+    const handler = () => {
+      loadUnread();
+      if (currentView === 'dashboard' || currentView === 'notifications') {
+        setRefreshKey((k) => k + 1);
+      }
+    };
+    window.addEventListener('glpi:notification', handler);
+    return () => window.removeEventListener('glpi:notification', handler);
+  }, [loadUnread, currentView]);
+
   const navigate = useCallback((view: ViewName) => {
     setCurrentView(view);
-  }, []);
+    if (view === 'notifications') {
+      loadUnread();
+    }
+  }, [loadUnread]);
 
   const openTicket = useCallback((id: number) => {
     setSelectedTicketId(id);
@@ -59,7 +87,7 @@ export default function GLPISidebar({ onClose }: GLPISidebarProps) {
   const renderView = () => {
     switch (currentView) {
       case 'dashboard':
-        return <Dashboard status={status} loading={loading} onNavigate={navigate} />;
+        return <Dashboard status={status} loading={loading} onNavigate={navigate} onOpenTicket={openTicket} />;
       case 'create-ticket':
         return <CreateTicket onNavigate={navigate} />;
       case 'my-tickets':
@@ -72,18 +100,18 @@ export default function GLPISidebar({ onClose }: GLPISidebarProps) {
         return selectedTicketId ? (
           <TicketDetails ticketId={selectedTicketId} onNavigate={navigate} />
         ) : (
-          <Dashboard status={status} loading={loading} onNavigate={navigate} />
+          <Dashboard status={status} loading={loading} onNavigate={navigate} onOpenTicket={openTicket} />
         );
       case 'assets':
         return <Assets />;
       case 'knowledge-base':
         return <KnowledgeBase />;
       case 'notifications':
-        return <Notifications />;
+        return <Notifications onOpenTicket={openTicket} />;
       case 'settings':
         return <Settings />;
       default:
-        return <Dashboard status={status} loading={loading} onNavigate={navigate} />;
+        return <Dashboard status={status} loading={loading} onNavigate={navigate} onOpenTicket={openTicket} />;
     }
   };
 
@@ -118,12 +146,15 @@ export default function GLPISidebar({ onClose }: GLPISidebarProps) {
             onClick={() => navigate(item.id)}
           >
             {item.label}
+            {item.id === 'notifications' && notificationUnread > 0 && (
+              <span className="glpi-notif-badge">{notificationUnread}</span>
+            )}
           </button>
         ))}
       </nav>
 
       {/* Content */}
-      <div className="glpi-content">
+      <div className="glpi-content" key={refreshKey}>
         {!isConfigured && currentView === 'dashboard' ? (
           <div className="glpi-error">
             <div className="glpi-error-icon">⚙️</div>

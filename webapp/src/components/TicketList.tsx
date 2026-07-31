@@ -12,18 +12,39 @@ interface TicketListProps {
   onOpenTicket: (id: number) => void;
 }
 
+const STATUS_FILTERS = [
+  { value: 0, label: 'All statuses' },
+  { value: 1, label: 'New' },
+  { value: 2, label: 'Processing' },
+  { value: 3, label: 'Planned' },
+  { value: 4, label: 'Pending' },
+  { value: 5, label: 'Solved' },
+  { value: 6, label: 'Closed' },
+];
+
+const SORT_OPTIONS = [
+  { value: 19, label: 'Last updated' },
+  { value: 2, label: 'ID' },
+  { value: 1, label: 'Title' },
+  { value: 3, label: 'Priority' },
+  { value: 12, label: 'Status' },
+];
+
 export default function TicketList({ type, onNavigate, onOpenTicket }: TicketListProps) {
   const [tickets, setTickets] = useState<TicketSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
+  const [statusFilter, setStatusFilter] = useState(0);
+  const [sortBy, setSortBy] = useState(19);
+  const [sortOrder, setSortOrder] = useState<'ASC' | 'DESC'>('DESC');
 
   const fetchTickets = useCallback(async (pageNum: number) => {
     setLoading(true);
     setError(null);
     try {
-      const result = await api.listTickets(type, undefined, pageNum);
+      const result = await api.listTickets(type, undefined, pageNum, 15, statusFilter || undefined, sortBy, sortOrder);
       setTickets(result.tickets);
       setTotal(result.total);
     } catch (err: unknown) {
@@ -31,11 +52,21 @@ export default function TicketList({ type, onNavigate, onOpenTicket }: TicketLis
     } finally {
       setLoading(false);
     }
-  }, [type]);
+  }, [type, statusFilter, sortBy, sortOrder]);
 
   useEffect(() => {
     fetchTickets(page);
   }, [fetchTickets, page]);
+
+  const handleStatusChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    setStatusFilter(Number(e.target.value));
+    setPage(1);
+  };
+
+  const handleSortChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    setSortBy(Number(e.target.value));
+    setPage(1);
+  };
 
   const title = type === 'my' ? 'My Tickets' : 'Assigned Tickets';
   const totalPages = Math.ceil(total / 15);
@@ -44,6 +75,42 @@ export default function TicketList({ type, onNavigate, onOpenTicket }: TicketLis
     <div>
       <div className="glpi-section">
         <div className="glpi-section-title">{title}</div>
+
+        <div className="glpi-search-bar">
+          <select
+            className="glpi-select"
+            value={statusFilter}
+            onChange={handleStatusChange}
+            aria-label="Filter by status"
+          >
+            {STATUS_FILTERS.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+          <select
+            className="glpi-select"
+            value={sortBy}
+            onChange={handleSortChange}
+            aria-label="Sort by"
+          >
+            {SORT_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+          <button
+            className="glpi-btn glpi-btn-secondary glpi-btn-sm"
+            onClick={() => setSortOrder((o) => (o === 'DESC' ? 'ASC' : 'DESC'))}
+          >
+            {sortOrder === 'DESC' ? '↓ Newest' : '↑ Oldest'}
+          </button>
+          <button
+            className="glpi-btn glpi-btn-secondary glpi-btn-sm"
+            onClick={() => fetchTickets(page)}
+            disabled={loading}
+          >
+            ↻ Refresh
+          </button>
+        </div>
 
         {loading && <Loading text="Loading tickets..." />}
         {error && <ErrorState message={error} onRetry={() => fetchTickets(page)} />}
