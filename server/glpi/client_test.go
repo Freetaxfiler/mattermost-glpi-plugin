@@ -23,7 +23,10 @@ func TestHealthCheckReturnsVersion(t *testing.T) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"session_token":"abc123"}`))
-		case "/apirest.php/healthcheck":
+		case "/apirest.php/getGlpiConfig":
+			// getGlpiConfig is the only health-check endpoint: GLPI 11 has no
+			// /apirest.php/healthcheck predefined endpoint and rejects it with
+			// ERROR_RESOURCE_NOT_FOUND_NOR_COMMONDBTM.
 			if got := r.Header.Get("Session-Token"); got != "abc123" {
 				t.Fatalf("expected Session-Token header, got %q", got)
 			}

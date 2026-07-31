@@ -307,6 +307,15 @@ func (p *Plugin) initializeGLPIClient() error {
 		client.SetBackoffBase(time.Duration(200) * time.Millisecond)
 	}
 
+	// Per-request GLPI diagnostics (HTTP method, full URL, response status,
+	// response body) are emitted only when debug logging is enabled. This has
+	// no effect on production log output when EnableDebug is off.
+	if config.EnableDebug {
+		client.SetDebugLogger(func(msg string, keyvals ...interface{}) {
+			p.API.LogInfo(msg, keyvals...)
+		})
+	}
+
 	p.configurationLock.Lock()
 	p.glpiClient = client
 	p.configurationLock.Unlock()

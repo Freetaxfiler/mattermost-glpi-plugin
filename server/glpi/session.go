@@ -61,6 +61,16 @@ func (c *Client) ensureSession(ctx context.Context) error {
 		}
 		bodyBytes, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
+
+		if c.debugLog != nil {
+			c.debugLog("GLPI request",
+				"method", http.MethodGet,
+				"url", c.baseURL+"/apirest.php/initSession",
+				"status", resp.StatusCode,
+				"body", truncateBody(string(bodyBytes)),
+			)
+		}
+
 		if readErr != nil {
 			lastErr = &NetworkError{Message: "failed to read GLPI session response body", Err: readErr}
 			if attempt < c.maxRetries {
@@ -138,7 +148,17 @@ func (c *Client) KillSession(ctx context.Context) error {
 	if err != nil {
 		return &NetworkError{Message: "failed to reach GLPI during session teardown", Err: err}
 	}
+	bodyBytes, _ := io.ReadAll(response.Body)
 	response.Body.Close()
+
+	if c.debugLog != nil {
+		c.debugLog("GLPI request",
+			"method", http.MethodGet,
+			"url", c.baseURL+"/apirest.php/killSession",
+			"status", response.StatusCode,
+			"body", truncateBody(string(bodyBytes)),
+		)
+	}
 
 	c.clearSession()
 	return nil

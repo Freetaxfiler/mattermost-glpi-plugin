@@ -151,6 +151,16 @@ func (c *Client) uploadDocumentOnce(ctx context.Context, filename string, data [
 		}
 		responseBody, err := io.ReadAll(response.Body)
 		response.Body.Close()
+
+		if c.debugLog != nil {
+			c.debugLog("GLPI request",
+				"method", http.MethodPost,
+				"url", c.baseURL+"/apirest.php/Document",
+				"status", response.StatusCode,
+				"body", truncateBody(string(responseBody)),
+			)
+		}
+
 		if err != nil {
 			lastErr = &NetworkError{Message: "failed to read GLPI document response", Err: err}
 			if attempt < c.maxRetries {

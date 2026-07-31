@@ -33,6 +33,9 @@ type Client struct {
 	lastRequest  time.Time
 	maxRetries   int
 	backoffBase  time.Duration
+
+	// debugLog, when set, receives diagnostics for every outbound GLPI request.
+	debugLog func(msg string, keyvals ...interface{})
 }
 
 // GLPIClient describes the subset of GLPI functionality used by the plugin.
@@ -277,6 +280,15 @@ func (c *Client) doRequestWithRetry(ctx context.Context, method, path string, qu
 		bodyBytes, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
 
+		if c.debugLog != nil {
+			c.debugLog("GLPI request",
+				"method", method,
+				"url", fullURL,
+				"status", resp.StatusCode,
+				"body", truncateBody(string(bodyBytes)),
+			)
+		}
+
 		if metadata != nil {
 			metadata.StatusCode = resp.StatusCode
 			metadata.Header = resp.Header.Clone()
@@ -352,7 +364,12 @@ func (c *Client) HealthCheck(ctx context.Context) (*HealthCheckResponse, error) 
 		return nil, err
 	}
 
-	endpoints := []string{"/apirest.php/healthcheck", "/apirest.php/getGlpiConfig"}
+	// Only getGlpiConfig is a valid GLPI REST endpoint. GLPI has no
+	// /apirest.php/healthcheck predefined endpoint: a request to it falls
+	// through to the CommonDBTM itemtype handler and is rejected with HTTP 400
+	// ERROR_RESOURCE_NOT_FOUND_NOR_COMMONDBTM. getGlpiConfig is a predefined
+	// endpoint that returns the GLPI version in $CFG_GLPI['version'].
+	endpoints := []string{"/apirest.php/getGlpiConfig"}
 	var lastErr error
 	for _, endpoint := range endpoints {
 		var payload struct {
@@ -375,7 +392,11 @@ func (c *Client) HealthCheck(ctx context.Context) (*HealthCheckResponse, error) 
 			switch {
 			case isAsNotFound(err, &notFound):
 				continue
-			case isAsNetwork(err, &netErr) && netErr.StatusCode == http.StatusMethodNotAllowed:
+			case isAsNetwork(err, &netErr) && (netErr.StatusCode == http.StatusMethodNotAllowed || netErr.StatusCode == http.StatusBadRequest):
+				// GLPI returns 400 ERROR_RESOURCE_NOT_FOUND_NOR_COMMONDBTM for
+				// endpoints that are neither predefined nor CommonDBTM item
+				// types; treat them as unavailable and continue to the next
+				// endpoint.
 				continue
 			default:
 				return nil, err
@@ -474,4 +495,21 @@ func (c *Client) SetBackoffBase(d time.Duration) {
 		d = 100 * time.Millisecond
 	}
 	c.backoffBase = d
+}
+
+// SetDebugLogger installs a callback that receives per-request diagnostics
+// (HTTP method, full URL, response status, response body) for every outbound
+// GLPI API request. Intended for temporary troubleshooting.
+func (c *Client) SetDebugLogger(fn func(msg string, keyvals ...interface{})) {
+	c.debugLog = fn
+}
+
+// truncateBody caps a logged response body to a reasonable size so that
+// collection responses do not flood the log.
+func truncateBody(s string) string {
+	const max = 2000
+	if len(s) > max {
+		return s[:max] + fmt.Sprintf("…(%d more bytes)", len(s)-max)
+	}
+	return s
 }
