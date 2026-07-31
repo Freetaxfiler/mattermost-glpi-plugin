@@ -51,6 +51,9 @@ export default function TicketDetails({ ticketId, onNavigate }: TicketDetailsPro
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
 
+  // Timeline
+  const [timelineFilter, setTimelineFilter] = useState<string>('');
+
   const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -419,8 +422,23 @@ export default function TicketDetails({ ticketId, onNavigate }: TicketDetailsPro
       {/* Timeline */}
       {timeline && timeline.Events.length > 0 && (
         <div className="glpi-section">
-          <div className="glpi-section-title">Timeline ({timeline.Total})</div>
-          {timeline.Events.slice(0, 20).map((event: TimelineEvent) => (
+          <div className="glpi-flex glpi-flex-between glpi-flex-center">
+            <div className="glpi-section-title">Timeline ({timeline.Total})</div>
+            <select
+              className="glpi-select"
+              style={{ width: 'auto', fontSize: 12 }}
+              value={timelineFilter}
+              onChange={(e) => setTimelineFilter(e.target.value)}
+              aria-label="Filter timeline by type"
+            >
+              <option value="">All events</option>
+              <option value="followup">Follow-ups</option>
+              <option value="solution">Solutions</option>
+              <option value="validation">Approvals</option>
+              <option value="history">History</option>
+            </select>
+          </div>
+          {timeline.Events.filter((e) => !timelineFilter || e.Kind === timelineFilter).slice(0, 20).map((event: TimelineEvent) => (
             <div key={`${event.Kind}-${event.ID}`} className="glpi-timeline-event">
               <div className="glpi-timeline-event-meta">
                 {event.Kind}{event.IsPrivate ? ' (private)' : ''} — {event.Author || 'System'} — {event.Date}
