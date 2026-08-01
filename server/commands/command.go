@@ -35,7 +35,12 @@ type PluginExecutor interface {
 	OpenCreateTicketDialog(args *model.CommandArgs) error
 
 	// GetGLPIUserID resolves the GLPI user ID for a Mattermost user (by email).
+	// Returns 0 when no individual GLPI user exists (integration mode).
 	GetGLPIUserID(mattermostUserID string) (int, error)
+
+	// GetMyTickets returns the Mattermost user's owned tickets from the
+	// identity-service ownership mapping (used when no GLPI user exists).
+	GetMyTickets(mattermostUserID string) ([]glpi.TicketSummary, int, error)
 
 	// IsSystemAdmin reports whether the Mattermost user is a system admin.
 	IsSystemAdmin(mattermostUserID string) bool

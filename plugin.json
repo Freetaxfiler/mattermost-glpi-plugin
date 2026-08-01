@@ -77,6 +77,13 @@
         "default": false
       },
       {
+        "key": "enable_user_mapping",
+        "display_name": "Map Mattermost Users to GLPI Users",
+        "type": "bool",
+        "help_text": "When enabled, tickets are attributed to the GLPI user matching the requester's email when one exists. When disabled (default), all requests use the integration account and the Mattermost identity is preserved as ticket metadata. Unmatched users always fall back to the integration account.",
+        "default": false
+      },
+      {
         "key": "max_upload_size_bytes",
         "display_name": "Maximum Upload Size (bytes)",
         "type": "number",

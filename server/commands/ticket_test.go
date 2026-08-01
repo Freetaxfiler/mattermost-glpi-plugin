@@ -82,6 +82,7 @@ func (e workflowTestExecutor) GetConfiguration() *ConfigView { return &ConfigVie
 func (e workflowTestExecutor) GetGLPIClient() glpi.GLPIClient { return e.client }
 func (e workflowTestExecutor) OpenCreateTicketDialog(*model.CommandArgs) error { return nil }
 func (e workflowTestExecutor) GetGLPIUserID(string) (int, error) { return 0, nil }
+func (e workflowTestExecutor) GetMyTickets(string) ([]glpi.TicketSummary, int, error) { return nil, 0, nil }
 func (e workflowTestExecutor) IsSystemAdmin(string) bool { return false }
 func (e workflowTestExecutor) LatestFileAttachment(string, string) (string, []byte, error) {
 	return "", nil, nil

@@ -2,7 +2,6 @@ package commands
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -17,13 +16,26 @@ func executeMyTickets(ctx context.Context, p PluginExecutor, config *ConfigView,
 	if errResp != nil {
 		return errResp, nil
 	}
-	return listTickets(ctx, p, config, glpi.TicketFilter{RequesterID: glpiUserID, Limit: listLimit}, "Tickets you requested")
+	if glpiUserID > 0 {
+		return listTickets(ctx, p, config, glpi.TicketFilter{RequesterID: glpiUserID, Limit: listLimit}, "Tickets you requested")
+	}
+	// No individual GLPI account (integration mode): fall back to the
+	// identity-service ownership mapping so "My Tickets" never fails.
+	tickets, total, err := p.GetMyTickets(args.UserId)
+	if err != nil {
+		return responseText(fmt.Sprintf("Could not load your tickets: %v", err)), nil
+	}
+	return renderTicketList("Tickets you requested", tickets, total, config), nil
 }
 
 func executeAssignedTickets(ctx context.Context, p PluginExecutor, config *ConfigView, args *model.CommandArgs) (*model.CommandResponse, *model.AppError) {
 	glpiUserID, errResp := resolveGLPIUser(p, args.UserId)
 	if errResp != nil {
 		return errResp, nil
+	}
+	if glpiUserID <= 0 {
+		// A user without an individual GLPI account cannot be an assignee.
+		return responseText("### Tickets assigned to you\nNo tickets assigned."), nil
 	}
 	return listTickets(ctx, p, config, glpi.TicketFilter{AssigneeID: glpiUserID, Limit: listLimit}, "Tickets assigned to you")
 }
@@ -41,13 +53,11 @@ func executeSearchTickets(ctx context.Context, p PluginExecutor, config *ConfigV
 	return listTickets(ctx, p, config, glpi.TicketFilter{TitleQuery: query, Limit: listLimit}, fmt.Sprintf("Tickets matching `%s`", query))
 }
 
+// resolveGLPIUser returns the user's GLPI user id (0 when no individual GLPI
+// account exists). A 0 result is not an error: callers must fall back.
 func resolveGLPIUser(p PluginExecutor, mattermostUserID string) (int, *model.CommandResponse) {
 	glpiUserID, err := p.GetGLPIUserID(mattermostUserID)
 	if err != nil {
-		var notFound *glpi.NotFoundError
-		if errors.As(err, &notFound) {
-			return 0, responseText("Your Mattermost email address does not match any GLPI user. Ask your GLPI administrator to check your account email.")
-		}
 		return 0, responseText(fmt.Sprintf("Could not resolve your GLPI account: %v", err))
 	}
 	return glpiUserID, nil
@@ -67,8 +77,14 @@ func listTickets(ctx context.Context, p PluginExecutor, config *ConfigView, filt
 		return friendlyError("Searching tickets", err), nil
 	}
 
+	return renderTicketList(title, tickets, total, config), nil
+}
+
+// renderTicketList renders a ticket summary table (shared by GLPI searches and
+// the identity-service ownership fallback).
+func renderTicketList(title string, tickets []glpi.TicketSummary, total int, config *ConfigView) *model.CommandResponse {
 	if len(tickets) == 0 {
-		return responseText(fmt.Sprintf("### %s\nNo tickets found.", title)), nil
+		return responseText(fmt.Sprintf("### %s\nNo tickets found.", title))
 	}
 
 	var b strings.Builder
@@ -94,7 +110,7 @@ func listTickets(ctx context.Context, p PluginExecutor, config *ConfigView, filt
 		b.WriteString(fmt.Sprintf("\nShowing %d of %d tickets. Refine with `/glpi search <text>` or open GLPI for the full list.", len(tickets), total))
 	}
 	b.WriteString("\nUse `/glpi view <id>` for details.")
-	return responseText(b.String()), nil
+	return responseText(b.String())
 }
 
 func escapePipes(text string) string {

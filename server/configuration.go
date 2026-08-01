@@ -15,6 +15,7 @@ type Configuration struct {
 	WebhookSecret         string   `json:"webhook_secret"`
 	NotificationChannelID string   `json:"notification_channel_id"`
 	EnableDebug           bool     `json:"enable_debug"`
+	EnableUserMapping     bool     `json:"enable_user_mapping"`
 
 	// Production hardening options (optional)
 	MaxUploadSizeBytes           int      `json:"max_upload_size_bytes"`

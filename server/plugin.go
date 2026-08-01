@@ -3,14 +3,14 @@ package main
 import (
 	"context"
 	"fmt"
-	"strconv"
-	"sync"
-	"time"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/Freetaxfiler/mattermost-glpi-plugin/server/commands"
 	"github.com/Freetaxfiler/mattermost-glpi-plugin/server/glpi"
+	"github.com/Freetaxfiler/mattermost-glpi-plugin/server/identity"
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin"
 	"github.com/mattermost/mattermost/server/public/pluginapi"
@@ -18,8 +18,6 @@ import (
 
 // PluginID must match the id declared in plugin.json.
 const PluginID = "com.ntas.glpi"
-
-const glpiUserCacheSeconds = 3600
 
 // Plugin is the main server-side plugin entry point.
 type Plugin struct {
@@ -29,6 +27,7 @@ type Plugin struct {
 	configurationLock sync.RWMutex
 	configuration     *Configuration
 	glpiClient        glpi.GLPIClient
+	identitySvc       *identity.Service
 	botUserID         string
 	// retry queue for durable retry of non-idempotent operations
 	retryQueue        *RetryQueue
@@ -63,6 +62,7 @@ func (p *Plugin) OnActivate() error {
 	if err := p.initializeGLPIClient(); err != nil {
 		p.API.LogWarn("failed to initialize GLPI client", "err", err.Error())
 	}
+	p.initializeIdentity()
 
 	// initialize and start retry queue
 	p.retryQueue = newRetryQueueFromConfig(p)
@@ -81,6 +81,7 @@ func (p *Plugin) OnConfigurationChange() error {
 	if err := p.initializeGLPIClient(); err != nil {
 		p.API.LogWarn("failed to initialize GLPI client after configuration change", "err", err.Error())
 	}
+	p.initializeIdentity()
 
 	// update retry queue configuration without dropping pending jobs
 	if p.retryQueue != nil {
@@ -153,39 +154,108 @@ func (p *Plugin) GetGLPIClient() glpi.GLPIClient {
 	return p.glpiClient
 }
 
-// GetGLPIUserID resolves (and caches) the GLPI user ID matching the Mattermost
-// user's email address.
-func (p *Plugin) GetGLPIUserID(mattermostUserID string) (int, error) {
-	kvKey := "glpi_uid_" + mattermostUserID
-	if data, appErr := p.API.KVGet(kvKey); appErr == nil && len(data) > 0 {
-		if id, err := strconv.Atoi(string(data)); err == nil && id > 0 {
-			return id, nil
+// initializeIdentity (re)builds the centralized identity service from the
+// current configuration and GLPI client.
+func (p *Plugin) initializeIdentity() {
+	config := p.currentConfiguration()
+	enableMapping := false
+	if config != nil {
+		enableMapping = config.EnableUserMapping
+	}
+	svc := identity.New(p.API, p.GetGLPIClient(), enableMapping)
+	p.configurationLock.Lock()
+	p.identitySvc = svc
+	p.configurationLock.Unlock()
+}
+
+// currentIdentity returns the identity service, or nil before it is initialized.
+func (p *Plugin) currentIdentity() *identity.Service {
+	p.configurationLock.RLock()
+	defer p.configurationLock.RUnlock()
+	return p.identitySvc
+}
+
+// loadMMUser builds the Mattermost identity for a user, resolving team and
+// channel names when ids are supplied (dialog submissions).
+func (p *Plugin) loadMMUser(userID, teamID, channelID string) (*identity.MMUser, error) {
+	user, appErr := p.API.GetUser(userID)
+	if appErr != nil {
+		return nil, fmt.Errorf("failed to load Mattermost user: %s", appErr.Error())
+	}
+	mm := &identity.MMUser{
+		UserID:      user.Id,
+		Username:    user.Username,
+		DisplayName: strings.TrimSpace(user.FirstName + " " + user.LastName),
+		Email:       user.Email,
+		TeamID:      teamID,
+		ChannelID:   channelID,
+	}
+	if mm.DisplayName == "" {
+		mm.DisplayName = user.Username
+	}
+	if teamID != "" {
+		if team, err := p.API.GetTeam(teamID); err == nil && team != nil {
+			mm.Team = team.Name
 		}
 	}
-
-	user, appErr := p.API.GetUser(mattermostUserID)
-	if appErr != nil {
-		return 0, fmt.Errorf("failed to load Mattermost user: %s", appErr.Error())
+	if channelID != "" {
+		if ch, err := p.API.GetChannel(channelID); err == nil && ch != nil {
+			mm.Channel = ch.Name
+		}
 	}
+	return mm, nil
+}
 
-	client := p.GetGLPIClient()
-	if client == nil {
-		return 0, fmt.Errorf("GLPI client is not initialized")
+// resolveRequesterFor resolves a Mattermost user's GLPI requester identity
+// through the centralized identity service. It never fails: it returns the
+// integration account (id 0) when the service is unavailable or no GLPI user
+// matches. mm is the captured Mattermost identity (nil on load failure).
+func (p *Plugin) resolveRequesterFor(userID, teamID, channelID string) (identity.Requester, *identity.MMUser) {
+	svc := p.currentIdentity()
+	if svc == nil {
+		return identity.Requester{Mode: identity.ModeIntegration, GLPIUserID: 0}, nil
 	}
-
+	mm, err := p.loadMMUser(userID, teamID, channelID)
+	if err != nil {
+		return identity.Requester{Mode: identity.ModeIntegration, GLPIUserID: 0}, nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	return svc.ResolveRequester(ctx, mm), mm
+}
 
-	glpiUserID, err := client.FindUserIDByEmail(ctx, user.Email)
-	if err != nil {
-		return 0, err
+// recordOwnership associates a Mattermost user with a created ticket so
+// "My Tickets" works even without an individual GLPI account (Mode A).
+func (p *Plugin) recordOwnership(userID string, ticketID int) {
+	if svc := p.currentIdentity(); svc != nil {
+		svc.RecordTicketOwnership(userID, ticketID)
 	}
+}
 
-	if appErr := p.API.KVSetWithExpiry(kvKey, []byte(strconv.Itoa(glpiUserID)), glpiUserCacheSeconds); appErr != nil {
-		p.API.LogWarn("failed to cache GLPI user id", "err", appErr.Error())
+// GetGLPIUserID resolves the GLPI user ID for a Mattermost user through the
+// centralized identity service. It returns 0 (integration account) in the
+// default mode and whenever no GLPI user matches. Callers must treat 0 as
+// "no individual GLPI user" and fall back gracefully; it never aborts.
+func (p *Plugin) GetGLPIUserID(mattermostUserID string) (int, error) {
+	requester, _ := p.resolveRequesterFor(mattermostUserID, "", "")
+	return requester.GLPIUserID, nil
+}
+
+// GetMyTickets returns the Mattermost user's owned tickets via the identity
+// service ownership mapping (Mode A fallback). It is exposed on the command
+// executor so slash commands never fail when no GLPI user exists.
+func (p *Plugin) GetMyTickets(mattermostUserID string) ([]glpi.TicketSummary, int, error) {
+	svc := p.currentIdentity()
+	if svc == nil {
+		return nil, 0, fmt.Errorf("identity service is not initialized")
 	}
-
-	return glpiUserID, nil
+	client := p.GetGLPIClient()
+	if client == nil {
+		return nil, 0, fmt.Errorf("GLPI client is not initialized")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return svc.ListOwnedTickets(ctx, mattermostUserID, 1, 15, client.GetTicket)
 }
 
 // IsSystemAdmin reports whether the given Mattermost user is a system admin.

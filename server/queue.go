@@ -259,6 +259,7 @@ func (q *RetryQueue) processCreateTicket(job *QueueJob) {
 	defer cancel()
 	res, err := client.CreateTicket(ctx, payload.Request)
 	if err == nil {
+		q.p.recordOwnership(payload.RequesterMattermost, res.ID)
 		q.p.API.LogInfo("queued ticket created", "job_id", job.ID, "ticket_id", res.ID)
 		// notify channel or user if present
 		if payload.ChannelID != "" && q.p.botUserID != "" {

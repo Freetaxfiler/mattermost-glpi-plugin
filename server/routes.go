@@ -224,12 +224,13 @@ func (p *Plugin) handleDialogSubmission(ctx context.Context, req *model.SubmitDi
 		}
 	}
 
-	// Best-effort: file the ticket under the submitting user's GLPI account.
-	requesterID := 0
-	if glpiUserID, err := p.GetGLPIUserID(req.UserId); err == nil {
-		requesterID = glpiUserID
-	} else {
-		p.API.LogDebug("could not resolve GLPI requester for dialog submission", "err", err.Error())
+	// Resolve the requester through the centralized identity service. Ticket
+	// creation never aborts when the user has no individual GLPI account.
+	requester, mm := p.resolveRequesterFor(req.UserId, req.TeamId, req.ChannelId)
+	requesterID := requester.GLPIUserID
+	if requester.GLPIUserID == 0 && mm != nil {
+		// Integration account is the requester; preserve the Mattermost identity.
+		description += mm.MetadataHTML()
 	}
 
 	// preserve any request_id value from the incoming HTTP context when creating a ticket
@@ -288,6 +289,7 @@ func (p *Plugin) handleDialogSubmission(ctx context.Context, req *model.SubmitDi
 	}
 	p.API.SendEphemeralPost(req.UserId, post)
 
+	p.recordOwnership(req.UserId, result.ID)
 	p.recordTicketCreatedNotification(result.ID, createReq.Name)
 	p.API.LogInfo("Ticket created from dialog", "id", result.ID, "user_id", req.UserId, "request_id", reqID)
 	return nil, nil

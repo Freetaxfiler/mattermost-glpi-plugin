@@ -262,6 +262,10 @@ func (p *Plugin) apiListTickets(w http.ResponseWriter, r *http.Request) {
 	if l, err := strconv.Atoi(q.Get("per_page")); err == nil && l > 0 && l <= 100 {
 		limit = l
 	}
+	page := 1
+	if pn, err := strconv.Atoi(q.Get("page")); err == nil && pn > 0 {
+		page = pn
+	}
 
 	client := p.GetGLPIClient()
 	if client == nil {
@@ -274,6 +278,7 @@ func (p *Plugin) apiListTickets(w http.ResponseWriter, r *http.Request) {
 
 	var glpiFilter glpi.TicketFilter
 	glpiFilter.Limit = limit
+	glpiFilter.Page = page
 
 	if s := q.Get("status"); s != "" {
 		if status, err := strconv.Atoi(s); err == nil && status > 0 {
@@ -296,14 +301,37 @@ func (p *Plugin) apiListTickets(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "could not resolve glpi user")
 			return
 		}
-		glpiFilter.RequesterID = glpiUserID
+		if glpiUserID > 0 {
+			glpiFilter.RequesterID = glpiUserID
+		} else {
+			// No individual GLPI account (integration mode): fall back to the
+			// identity-service ownership mapping so "My Tickets" never fails.
+			svc := p.currentIdentity()
+			if svc == nil {
+				writeError(w, http.StatusServiceUnavailable, "identity service not initialized")
+				return
+			}
+			tickets, total, err := svc.ListOwnedTickets(ctx, uid, page, limit, client.GetTicket)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "ticket lookup failed: "+err.Error())
+				return
+			}
+			writeOK(w, map[string]interface{}{"tickets": tickets, "total": total, "count": len(tickets)})
+			return
+		}
 	case "assigned":
 		glpiUserID, err := p.GetGLPIUserID(uid)
 		if err != nil {
 			writeError(w, http.StatusNotFound, "could not resolve glpi user")
 			return
 		}
-		glpiFilter.AssigneeID = glpiUserID
+		if glpiUserID > 0 {
+			glpiFilter.AssigneeID = glpiUserID
+		} else {
+			// A user without an individual GLPI account cannot be an assignee.
+			writeOK(w, map[string]interface{}{"tickets": []glpi.TicketSummary{}, "total": 0, "count": 0})
+			return
+		}
 	default:
 		if search != "" {
 			glpiFilter.TitleQuery = search
@@ -368,9 +396,13 @@ func (p *Plugin) apiCreateTicket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	requesterID := 0
-	if glpiUserID, err := p.GetGLPIUserID(uid); err == nil {
-		requesterID = glpiUserID
+	requester, mm := p.resolveRequesterFor(uid, "", "")
+	requesterID := requester.GLPIUserID
+	content := strings.TrimSpace(req.Content)
+	if requester.GLPIUserID == 0 && mm != nil {
+		// Integration account is the requester; preserve the Mattermost identity
+		// as ticket metadata so ticket creation never loses the human.
+		content += mm.MetadataHTML()
 	}
 
 	categoryID := req.CategoryID
@@ -382,7 +414,7 @@ func (p *Plugin) apiCreateTicket(w http.ResponseWriter, r *http.Request) {
 
 	createReq := glpi.CreateTicketRequest{
 		Name:           strings.TrimSpace(req.Subject),
-		Content:        strings.TrimSpace(req.Content),
+		Content:        content,
 		Priority:       req.Priority,
 		Urgency:        req.Urgency,
 		Type:           req.Type,
@@ -400,6 +432,7 @@ func (p *Plugin) apiCreateTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	p.recordOwnership(uid, result.ID)
 	p.recordTicketCreatedNotification(result.ID, createReq.Name)
 	writeOK(w, result)
 }
@@ -872,6 +905,23 @@ func (p *Plugin) apiDashboard(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
+	if glpiUserID <= 0 {
+		// No individual GLPI account (integration mode): derive the stats from
+		// the identity-service ownership mapping.
+		svc := p.currentIdentity()
+		if svc == nil {
+			writeError(w, http.StatusServiceUnavailable, "identity service not initialized")
+			return
+		}
+		owned, _, err := svc.ListOwnedTickets(ctx, uid, 1, 100, client.GetTicket)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "dashboard lookup failed: "+err.Error())
+			return
+		}
+		writeOK(w, dashboardFromSummaries(owned))
+		return
+	}
+
 	countFor := func(filter glpi.TicketFilter) int {
 		_, total, err := client.SearchTickets(ctx, filter)
 		if err != nil {
@@ -904,6 +954,43 @@ func (p *Plugin) apiDashboard(w http.ResponseWriter, r *http.Request) {
 		"overdue":  overdueCount,
 		"recent":   recent,
 	})
+}
+
+// dashboardFromSummaries computes dashboard stats from an ownership-mapped
+// ticket list (integration mode, where GLPI searches cannot be requester-
+// scoped). "assigned" and "overdue" are 0 because TicketSummary carries no
+// assignee or due-date data.
+func dashboardFromSummaries(list []glpi.TicketSummary) map[string]interface{} {
+	open, resolved, pending, closed, critical := 0, 0, 0, 0, 0
+	for _, t := range list {
+		switch {
+		case t.Status == glpi.StatusSolved:
+			resolved++
+		case t.Status == glpi.StatusPending:
+			pending++
+		case t.Status == glpi.StatusClosed:
+			closed++
+		case t.Status < glpi.StatusSolved:
+			open++
+		}
+		if t.Priority >= 5 {
+			critical++
+		}
+	}
+	recent := list
+	if len(recent) > 5 {
+		recent = recent[:5]
+	}
+	return map[string]interface{}{
+		"open":     open,
+		"assigned": 0,
+		"resolved": resolved,
+		"pending":  pending,
+		"closed":   closed,
+		"critical": critical,
+		"overdue":  0,
+		"recent":   recent,
+	}
 }
 
 // ---------- /api/v1/categories ----------
