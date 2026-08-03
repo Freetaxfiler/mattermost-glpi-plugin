@@ -17,52 +17,198 @@ type stubKV struct {
 
 func newStubKV() *stubKV { return &stubKV{data: map[string][]byte{}, ttl: map[string]int64{}} }
 
-func (k *stubKV) KVGet(key string) ([]byte, *model.AppError)         { return k.data[key], nil }
-func (k *stubKV) KVSet(key string, value []byte) *model.AppError      { k.data[key] = value; return nil }
+func (k *stubKV) KVGet(key string) ([]byte, *model.AppError)          { return k.data[key], nil }
+func (k *stubKV) KVSet(key string, value []byte) *model.AppError       { k.data[key] = value; return nil }
 func (k *stubKV) KVSetWithExpiry(key string, value []byte, ttl int64) *model.AppError {
 	k.data[key] = value
 	k.ttl[key] = ttl
 	return nil
 }
-
-// stubLookup implements UserLookup.
-type stubLookup struct {
-	ids map[string]int
+func (k *stubKV) KVDelete(key string) *model.AppError {
+	delete(k.data, key)
+	return nil
 }
 
-func (l *stubLookup) FindUserIDByEmail(_ context.Context, email string) (int, error) {
-	return l.ids[email], nil
+// stubUsers implements UserStore in memory.
+type stubUsers struct {
+	byEmail  map[string]*glpi.UserSummary
+	byLogin  map[string]*glpi.UserSummary
+	byName   map[string]*glpi.UserSummary
+	profiles map[int][]string
+	created  []glpi.CreateUserRequest
+}
+
+func newStubUsers() *stubUsers {
+	return &stubUsers{
+		byEmail:  map[string]*glpi.UserSummary{},
+		byLogin:  map[string]*glpi.UserSummary{},
+		byName:   map[string]*glpi.UserSummary{},
+		profiles: map[int][]string{},
+	}
+}
+
+func (u *stubUsers) FindUserByEmail(_ context.Context, email string) (*glpi.UserSummary, error) {
+	if s, ok := u.byEmail[email]; ok {
+		return s, nil
+	}
+	return nil, &glpi.NotFoundError{Message: "no user for email " + email}
+}
+func (u *stubUsers) FindUserByLogin(_ context.Context, login string) (*glpi.UserSummary, error) {
+	if s, ok := u.byLogin[login]; ok {
+		return s, nil
+	}
+	return nil, &glpi.NotFoundError{Message: "no user for login " + login}
+}
+func (u *stubUsers) FindUserByName(_ context.Context, first, last string) (*glpi.UserSummary, error) {
+	if s, ok := u.byName[first+"|"+last]; ok {
+		return s, nil
+	}
+	return nil, &glpi.NotFoundError{Message: "no user for name"}
+}
+func (u *stubUsers) GetUserProfiles(_ context.Context, id int) ([]string, error) {
+	return u.profiles[id], nil
+}
+func (u *stubUsers) ListUsers(context.Context, int, int) ([]glpi.UserSummary, int, error) {
+	return nil, 0, nil
+}
+func (u *stubUsers) CreateUser(_ context.Context, req glpi.CreateUserRequest) (int, error) {
+	u.created = append(u.created, req)
+	return 900 + len(u.created), nil
 }
 
 func TestResolveRequesterModeAAlwaysIntegration(t *testing.T) {
 	svc := New(newStubKV(), nil, false)
-	r := svc.ResolveRequester(context.Background(), &MMUser{Email: "a@b.c"})
+	r := svc.ResolveRequester(context.Background(), &MMUser{UserID: "u1", Email: "a@b.c"})
 	if r.Mode != ModeIntegration || r.GLPIUserID != 0 {
 		t.Fatalf("expected integration, got %+v", r)
 	}
 }
 
-func TestResolveRequesterModeBMapsByEmail(t *testing.T) {
-	svc := New(newStubKV(), &stubLookup{ids: map[string]int{"a@b.c": 42}}, true)
-	r := svc.ResolveRequester(context.Background(), &MMUser{Email: "a@b.c"})
+func TestResolveRequesterModeBDiscoverAndMap(t *testing.T) {
+	users := newStubUsers()
+	users.byEmail["a@b.c"] = &glpi.UserSummary{ID: 42, Login: "bob", Email: "a@b.c"}
+	svc := New(newStubKV(), users, true)
+	r := svc.ResolveRequester(context.Background(), &MMUser{UserID: "u1", Username: "bob", Email: "a@b.c"})
 	if r.Mode != ModeMapped || r.GLPIUserID != 42 {
 		t.Fatalf("expected mapped 42, got %+v", r)
+	}
+	// Second call must hit the permanent mapping without a second discovery.
+	users.byEmail["a@b.c"] = nil
+	r2 := svc.ResolveRequester(context.Background(), &MMUser{UserID: "u1", Username: "bob", Email: "a@b.c"})
+	if r2.Mode != ModeMapped || r2.GLPIUserID != 42 {
+		t.Fatalf("expected cached mapped 42, got %+v", r2)
 	}
 }
 
 func TestResolveRequesterModeBFallsBackOnMissing(t *testing.T) {
-	svc := New(newStubKV(), &stubLookup{ids: map[string]int{}}, true)
-	r := svc.ResolveRequester(context.Background(), &MMUser{Email: "nobody@b.c"})
+	users := newStubUsers()
+	svc := New(newStubKV(), users, true)
+	r := svc.ResolveRequester(context.Background(), &MMUser{UserID: "u1", Username: "ghost", Email: "nobody@b.c"})
 	if r.Mode != ModeIntegration || r.GLPIUserID != 0 {
 		t.Fatalf("expected integration fallback, got %+v", r)
 	}
 }
 
 func TestResolveRequesterNilUserReturnsIntegration(t *testing.T) {
-	svc := New(newStubKV(), &stubLookup{ids: map[string]int{"a@b.c": 42}}, true)
+	svc := New(newStubKV(), newStubUsers(), true)
 	r := svc.ResolveRequester(context.Background(), nil)
 	if r.Mode != ModeIntegration || r.GLPIUserID != 0 {
 		t.Fatalf("expected integration, got %+v", r)
+	}
+}
+
+func TestMappingStoreRoundTripAndIndexes(t *testing.T) {
+	svc := New(newStubKV(), nil, false)
+	m := &Mapping{
+		MMUserID: "u1", MMUsername: "bob", MMEmail: "b@b.c", MMDisplayName: "Bob",
+		GLPIUserID: 7, GLPILogin: "bob", GLPIMail: "b@b.c", Role: string(RoleEmployee), SyncStatus: "mapped", LastSync: 1,
+	}
+	if err := svc.SaveMapping(m); err != nil {
+		t.Fatalf("SaveMapping: %v", err)
+	}
+	if got, err := svc.GetMappingByMMID("u1"); err != nil || got.GLPIUserID != 7 {
+		t.Fatalf("by MMID: %v %v", got, err)
+	}
+	if got, err := svc.GetMappingByEmail("b@b.c"); err != nil || got.MMUserID != "u1" {
+		t.Fatalf("by email: %v %v", got, err)
+	}
+	if got, err := svc.GetMappingByGLPIID(7); err != nil || got.MMUserID != "u1" {
+		t.Fatalf("by glpi id: %v %v", got, err)
+	}
+	if got, err := svc.GetMappingByLogin("bob"); err != nil || got.MMUserID != "u1" {
+		t.Fatalf("by login: %v %v", got, err)
+	}
+	if all, err := svc.AllMappings(); err != nil || len(all) != 1 {
+		t.Fatalf("AllMappings: %v %v", all, err)
+	}
+	if err := svc.RemoveMapping("u1"); err != nil {
+		t.Fatalf("RemoveMapping: %v", err)
+	}
+	if _, err := svc.GetMappingByMMID("u1"); err != ErrMappingNotFound {
+		t.Fatalf("expected ErrMappingNotFound after removal, got %v", err)
+	}
+}
+
+func TestDiscoveryPriorityEmailOverLogin(t *testing.T) {
+	users := newStubUsers()
+	users.byEmail["a@b.c"] = &glpi.UserSummary{ID: 42, Login: "bob", Email: "a@b.c"}
+	users.byLogin["alice"] = &glpi.UserSummary{ID: 99, Login: "alice", Email: "x@y.z"}
+	svc := New(newStubKV(), users, true)
+	m, err := svc.DiscoverAndMap(context.Background(), &MMUser{UserID: "u1", Username: "alice", Email: "a@b.c"})
+	if err != nil || m.GLPIUserID != 42 {
+		t.Fatalf("email priority failed: %v %v", m, err)
+	}
+}
+
+func TestRoleMapping(t *testing.T) {
+	cases := map[string]Role{
+		"Self-Service":   RoleEmployee,
+		"Technician":     RoleTechnician,
+		"Hotliner":       RoleTechnician,
+		"Manager":        RoleManager,
+		"Supervisor":     RoleSupervisor,
+		"Super-Admin":    RoleAdministrator,
+		"Admin":          RoleAdministrator,
+		"Unknown Profile": RoleEmployee,
+		"":                RoleEmployee,
+	}
+	for name, want := range cases {
+		if got := MapProfileName(name); got != want {
+			t.Errorf("MapProfileName(%q) = %s, want %s", name, got, want)
+		}
+	}
+	if got := HighestRole([]string{"Technician", "Manager", "Super-Admin"}); got != RoleAdministrator {
+		t.Errorf("HighestRole = %s, want administrator", got)
+	}
+}
+
+func TestResolveRoleFromProfiles(t *testing.T) {
+	users := newStubUsers()
+	users.profiles[7] = []string{"Technician"}
+	svc := New(newStubKV(), users, true)
+	role, profiles, err := svc.ResolveRole(context.Background(), 7)
+	if err != nil || role != RoleTechnician || len(profiles) != 1 {
+		t.Fatalf("ResolveRole = %s %v %v", role, profiles, err)
+	}
+}
+
+func TestProvisionUserNeverDuplicates(t *testing.T) {
+	users := newStubUsers()
+	svc := New(newStubKV(), users, true)
+	mm := &MMUser{UserID: "u1", Username: "jane doe", DisplayName: "Jane Doe", Email: "jane@x.c"}
+	m1, err := svc.ProvisionUser(context.Background(), mm, 5, 0)
+	if err != nil || m1.GLPIUserID == 0 {
+		t.Fatalf("ProvisionUser: %v %v", m1, err)
+	}
+	if len(users.created) != 1 {
+		t.Fatalf("expected 1 created user, got %d", len(users.created))
+	}
+	m2, err := svc.ProvisionUser(context.Background(), mm, 5, 0)
+	if err != nil || m2.GLPIUserID != m1.GLPIUserID {
+		t.Fatalf("duplicate provision: %v %v", m2, err)
+	}
+	if len(users.created) != 1 {
+		t.Fatalf("second provision must not create another user, got %d", len(users.created))
 	}
 }
 

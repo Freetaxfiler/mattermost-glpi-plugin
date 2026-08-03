@@ -527,7 +527,45 @@
 .glpi-gap-4 { gap: 4px; }
 .glpi-mt-10 { margin-top: 10px; }
 .glpi-mb-10 { margin-bottom: 10px; }
+.glpi-mt-4 { margin-top: 4px; }
+.glpi-mb-4 { margin-bottom: 4px; }
+.glpi-mb-6 { margin-bottom: 6px; }
 .glpi-text-small { font-size: 12px; color: var(--center-channel-color-50, #888); }
+
+/* KB favorites / recently-viewed quick links */
+.glpi-kb-quicklink {
+  font-size: 12px;
+  padding: 4px 8px;
+  margin-bottom: 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--link-color, #1c58d9);
+  background: var(--center-channel-bg-02, #f5f5f5);
+}
+.glpi-kb-quicklink:hover { text-decoration: underline; }
+
+/* Favorites star on KB result rows */
+.glpi-star-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 2px 6px;
+  color: var(--link-color, #1c58d9);
+}
+.glpi-star-btn:hover { opacity: 0.7; }
+
+/* Error banner (admin page, forms) */
+.glpi-error-banner {
+  background: rgba(204, 0, 0, 0.08);
+  border: 1px solid rgba(204, 0, 0, 0.3);
+  color: var(--error-text, #c00);
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  font-size: 12px;
+}
 .glpi-monospace {
   font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
   font-size: 12px;

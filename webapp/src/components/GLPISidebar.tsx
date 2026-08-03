@@ -1,6 +1,7 @@
-import React, { useState, useCallback, useEffect } from 'react';
-import type { ViewName, StatusResponse } from '../types';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import type { ViewName, StatusResponse, UserResponse } from '../types';
 import { api } from '../api';
+import { isTechnicianOrHigher } from '../roles';
 
 import Dashboard from './Dashboard';
 import CreateTicket from './CreateTicket';
@@ -8,9 +9,11 @@ import TicketList from './TicketList';
 import TicketDetails from './TicketDetails';
 import SearchTicket from './SearchTicket';
 import Assets from './Assets';
+import MyAssets from './MyAssets';
 import KnowledgeBase from './KnowledgeBase';
 import Notifications from './Notifications';
 import Settings from './Settings';
+import Admin from './Admin';
 
 import '../styles.css';
 
@@ -30,6 +33,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'assigned-tickets', label: 'Assigned' },
   { id: 'search', label: 'Search' },
   { id: 'assets', label: 'Assets' },
+  { id: 'my-assets', label: 'My Assets' },
   { id: 'knowledge-base', label: 'KB' },
   { id: 'notifications', label: 'Alerts' },
   { id: 'settings', label: 'Settings' },
@@ -42,13 +46,23 @@ export default function GLPISidebar({ onClose }: GLPISidebarProps) {
   const [loading, setLoading] = useState(true);
   const [notificationUnread, setNotificationUnread] = useState(0);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [user, setUser] = useState<UserResponse | null>(null);
 
   useEffect(() => {
     api.getStatus()
       .then(setStatus)
       .catch(() => {})
       .finally(() => setLoading(false));
+    api.getUser().then(setUser).catch(() => {});
   }, []);
+
+  // Admin view is available only to Mattermost System Admins.
+  const navItems = useMemo(() => {
+    if (user?.is_system_admin) {
+      return [...NAV_ITEMS, { id: 'admin' as ViewName, label: 'Admin' }];
+    }
+    return NAV_ITEMS;
+  }, [user]);
 
   const loadUnread = useCallback(() => {
     api.getNotifications().then((r) => setNotificationUnread(r.unread)).catch(() => {});
@@ -98,18 +112,27 @@ export default function GLPISidebar({ onClose }: GLPISidebarProps) {
         return <SearchTicket onNavigate={navigate} onOpenTicket={openTicket} />;
       case 'ticket-details':
         return selectedTicketId ? (
-          <TicketDetails ticketId={selectedTicketId} onNavigate={navigate} />
+          <TicketDetails
+            ticketId={selectedTicketId}
+            onNavigate={navigate}
+            role={user?.role}
+            isSystemAdmin={user?.is_system_admin || false}
+          />
         ) : (
           <Dashboard status={status} loading={loading} onNavigate={navigate} onOpenTicket={openTicket} />
         );
       case 'assets':
         return <Assets />;
+      case 'my-assets':
+        return <MyAssets />;
       case 'knowledge-base':
         return <KnowledgeBase />;
       case 'notifications':
         return <Notifications onOpenTicket={openTicket} />;
       case 'settings':
         return <Settings />;
+      case 'admin':
+        return user?.is_system_admin ? <Admin /> : <Dashboard status={status} loading={loading} onNavigate={navigate} onOpenTicket={openTicket} />;
       default:
         return <Dashboard status={status} loading={loading} onNavigate={navigate} onOpenTicket={openTicket} />;
     }
@@ -139,7 +162,7 @@ export default function GLPISidebar({ onClose }: GLPISidebarProps) {
 
       {/* Navigation */}
       <nav className="glpi-nav">
-        {NAV_ITEMS.map((item) => (
+        {navItems.map((item) => (
           <button
             key={item.id}
             className={`glpi-nav-btn ${currentView === item.id ? 'active' : ''}`}

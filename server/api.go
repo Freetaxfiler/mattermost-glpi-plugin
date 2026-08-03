@@ -11,6 +11,7 @@ import (
 
 	"github.com/Freetaxfiler/mattermost-glpi-plugin/server/commands"
 	"github.com/Freetaxfiler/mattermost-glpi-plugin/server/glpi"
+	"github.com/Freetaxfiler/mattermost-glpi-plugin/server/identity"
 )
 
 // apiResponse is the standard envelope for all API JSON responses.
@@ -89,6 +90,12 @@ func (p *Plugin) handleAPI(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case len(parts) >= 2 && parts[1] == "categories":
 			p.apiKnowledgeCategories(w, r)
+		case len(parts) >= 2 && parts[1] == "favorites":
+			p.apiKnowledgeFavorites(w, r)
+		case len(parts) >= 2 && parts[1] == "recent":
+			p.apiKnowledgeRecent(w, r)
+		case len(parts) >= 4 && parts[2] == "favorite":
+			p.apiKnowledgeSetFavorite(w, r, parts[1])
 		case len(parts) >= 2:
 			p.apiKnowledgeArticle(w, r, parts[1])
 		default:
@@ -105,6 +112,10 @@ func (p *Plugin) handleAPI(w http.ResponseWriter, r *http.Request) {
 		}
 	case "user":
 		p.apiUser(w, r)
+	case "my-assets":
+		p.apiMyAssets(w, r)
+	case "admin":
+		p.apiAdmin(w, r, parts)
 	default:
 		writeError(w, http.StatusNotFound, "unknown API endpoint: "+resource)
 	}
@@ -832,11 +843,30 @@ func (p *Plugin) apiUser(w http.ResponseWriter, r *http.Request) {
 		glpiUserID = id
 	}
 
+	// Role + mapping details from the centralized identity service.
+	role := string(identity.RoleEmployee)
+	var glpiLogin, glpiEmail, glpiFullName, syncStatus string
+	if svc := p.currentIdentity(); svc != nil {
+		if m, err := svc.GetMappingByMMID(uid); err == nil && m.GLPIUserID > 0 {
+			role = m.Role
+			glpiLogin = m.GLPILogin
+			glpiEmail = m.GLPIMail
+			glpiFullName = m.GLPIFullName
+			syncStatus = m.SyncStatus
+			glpiUserID = m.GLPIUserID
+		}
+	}
+
 	resp := map[string]interface{}{
-		"id":            user.Id,
-		"username":      user.Username,
-		"email":         user.Email,
-		"glpi_user_id":  glpiUserID,
+		"id":              user.Id,
+		"username":        user.Username,
+		"email":           user.Email,
+		"glpi_user_id":    glpiUserID,
+		"glpi_login":      glpiLogin,
+		"glpi_email":      glpiEmail,
+		"glpi_full_name":  glpiFullName,
+		"role":            role,
+		"sync_status":     syncStatus,
 		"is_system_admin": p.IsSystemAdmin(uid),
 	}
 	writeOK(w, resp)
@@ -868,12 +898,35 @@ func (p *Plugin) apiSystem(w http.ResponseWriter, r *http.Request) {
 
 	webhookConfigured := config != nil && strings.TrimSpace(config.WebhookSecret) != ""
 
+	// Identity mapping / sync status.
+	mappingEnabled := config != nil && config.EnableUserMapping
+	mappedCount := 0
+	var lastSync int64
+	svc := p.currentIdentity()
+	if svc != nil {
+		if all, err := svc.AllMappings(); err == nil {
+			mappedCount = len(all)
+		}
+	}
+	if raw, appErr := p.API.KVGet(lastSyncKey); appErr == nil && len(raw) > 0 {
+		lastSync, _ = strconv.ParseInt(string(raw), 10, 64)
+	}
+
 	writeOK(w, map[string]interface{}{
-		"plugin_version": commands.PluginVersion,
+		"plugin_version":     commands.PluginVersion,
+		"mattermost_version": p.API.GetServerVersion(),
+		"glpi_connected":     config != nil && config.GLPIURL != "" && p.GetGLPIClient() != nil,
+		"debug":              config != nil && config.EnableDebug,
+		"mapping": map[string]interface{}{
+			"enabled": mappingEnabled,
+			"mapped":  mappedCount,
+			"last_sync": lastSync,
+		},
 		"retry_queue": map[string]interface{}{
 			"workers":      retryWorkers,
 			"max_attempts": retryMaxAttempts,
 			"backoff_base": retryBackoff,
+			"pending":      p.retryQueue.PendingCount(),
 		},
 		"webhook_configured": webhookConfigured,
 	})
@@ -1037,6 +1090,12 @@ func (p *Plugin) apiKnowledgeArticle(w http.ResponseWriter, r *http.Request, idS
 		return
 	}
 
+	uid, err := p.apiAuth(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
 	id, err := strconv.Atoi(idStr)
 	if err != nil || id <= 0 {
 		writeError(w, http.StatusBadRequest, "invalid article id")
@@ -1057,6 +1116,9 @@ func (p *Plugin) apiKnowledgeArticle(w http.ResponseWriter, r *http.Request, idS
 		writeError(w, http.StatusNotFound, "article not found")
 		return
 	}
+
+	// Read tracking + recently-viewed.
+	p.recordKBView(uid, id, article.Subject)
 
 	writeOK(w, article)
 }

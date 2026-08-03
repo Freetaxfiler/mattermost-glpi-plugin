@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import type { KnowledgeSummary, KnowledgeArticle, KnowbaseCategorySummary } from '../types';
+import type { KnowledgeSummary, KnowledgeArticle, KnowbaseCategorySummary, KBItem } from '../types';
 import { api } from '../api';
 import Loading from './common/Loading';
 import ErrorState from './common/ErrorState';
@@ -13,11 +13,39 @@ export default function KnowledgeBase() {
   const [glpiUrl, setGlpiUrl] = useState('');
   const [categories, setCategories] = useState<KnowbaseCategorySummary[]>([]);
   const [categoryFilter, setCategoryFilter] = useState(0);
+  const [favorites, setFavorites] = useState<Set<number>>(new Set());
+  const [favoriteItems, setFavoriteItems] = useState<KBItem[]>([]);
+  const [recentItems, setRecentItems] = useState<KBItem[]>([]);
 
   useEffect(() => {
     api.getConfig().then((c) => setGlpiUrl(c.glpi_url || '')).catch(() => {});
     api.getKnowledgeCategories().then((r) => setCategories(r.categories)).catch(() => {});
+    api.getKBFavorites().then((r) => {
+      setFavoriteItems(r.items);
+      setFavorites(new Set(r.items.map((i) => i.id)));
+    }).catch(() => {});
+    api.getKBRecent().then((r) => setRecentItems(r.items)).catch(() => {});
   }, []);
+
+  const toggleFavorite = useCallback(async (id: number, subject: string) => {
+    const fav = !favorites.has(id);
+    setFavorites((prev) => {
+      const next = new Set(prev);
+      if (fav) next.add(id); else next.delete(id);
+      return next;
+    });
+    try {
+      await api.setKBFavorite(id, subject, fav);
+      api.getKBFavorites().then((r) => setFavoriteItems(r.items)).catch(() => {});
+    } catch {
+      // revert on failure
+      setFavorites((prev) => {
+        const next = new Set(prev);
+        if (fav) next.delete(id); else next.add(id);
+        return next;
+      });
+    }
+  }, [favorites]);
   const [articles, setArticles] = useState<KnowledgeSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -50,6 +78,8 @@ export default function KnowledgeBase() {
     try {
       const article = await api.getKnowledgeArticle(id);
       setSelected(article);
+      // Read tracking: refresh recently-viewed after an article is opened.
+      api.getKBRecent().then((r) => setRecentItems(r.items)).catch(() => {});
     } catch (err: unknown) {
       setArticleError(err instanceof Error ? err.message : 'Failed to load article');
     } finally {
@@ -89,6 +119,12 @@ export default function KnowledgeBase() {
             <button className="glpi-btn glpi-btn-secondary glpi-btn-sm" onClick={closeArticle}>
               ← Back to results
             </button>
+            <button
+              className="glpi-btn glpi-btn-secondary glpi-btn-sm"
+              onClick={() => toggleFavorite(selected.id, selected.subject)}
+            >
+              {favorites.has(selected.id) ? '★ Remove Favorite' : '☆ Add Favorite'}
+            </button>
             {glpiUrl && (
               <a
                 className="glpi-btn glpi-btn-primary glpi-btn-sm"
@@ -112,6 +148,31 @@ export default function KnowledgeBase() {
     <div>
       <div className="glpi-section">
         <div className="glpi-section-title">Knowledge Base</div>
+
+        {(favoriteItems.length > 0 || recentItems.length > 0) && (
+          <div className="glpi-mb-10">
+            {favoriteItems.length > 0 && (
+              <div className="glpi-mb-6">
+                <div className="glpi-text-small glpi-mb-4" style={{ fontWeight: 600 }}>★ Favorites</div>
+                {favoriteItems.slice(0, 5).map((f) => (
+                  <div key={f.id} className="glpi-kb-quicklink" onClick={() => openArticle(f.id)}>
+                    {f.subject || `Article #${f.id}`}
+                  </div>
+                ))}
+              </div>
+            )}
+            {recentItems.length > 0 && (
+              <div>
+                <div className="glpi-text-small glpi-mb-4" style={{ fontWeight: 600 }}>Recently viewed</div>
+                {recentItems.slice(0, 5).map((r) => (
+                  <div key={r.id} className="glpi-kb-quicklink" onClick={() => openArticle(r.id)}>
+                    {r.subject || `Article #${r.id}`}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="glpi-search-bar">
           <input
@@ -171,7 +232,16 @@ export default function KnowledgeBase() {
             <div className="glpi-text-small glpi-mb-10">{total} article{total !== 1 ? 's' : ''} found</div>
             {articles.map((a) => (
               <div key={a.ID} className="glpi-card" style={{ cursor: 'pointer' }} onClick={() => openArticle(a.ID)}>
-                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>{a.Subject}</div>
+                <div className="glpi-flex glpi-flex-between glpi-flex-center">
+                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>{a.Subject}</div>
+                  <button
+                    className="glpi-star-btn"
+                    title={favorites.has(a.ID) ? 'Remove from favorites' : 'Add to favorites'}
+                    onClick={(e) => { e.stopPropagation(); toggleFavorite(a.ID, a.Subject); }}
+                  >
+                    {favorites.has(a.ID) ? '★' : '☆'}
+                  </button>
+                </div>
                 <div className="glpi-text-small">ID: {a.ID}</div>
               </div>
             ))}

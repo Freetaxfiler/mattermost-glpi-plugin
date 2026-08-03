@@ -1,21 +1,21 @@
 package identity
 
 // Service is the centralized identity layer. All plugin modules resolve a
-// Mattermost user's GLPI requester identity through it instead of searching
-// GLPI directly.
+// Mattermost user's GLPI identity (requester, role, owned tickets) through it
+// instead of searching GLPI directly.
 type Service struct {
 	kv                KVStore
-	lookup            UserLookup
+	users             UserStore
 	enableMapping     bool
 	ownedTicketsLimit int
 }
 
-// New builds a Service. lookup may be nil (Mode A only). enableMapping toggles
+// New builds a Service. users may be nil (Mode A only). enableMapping toggles
 // Mode B ("Map Mattermost Users").
-func New(kv KVStore, lookup UserLookup, enableMapping bool) *Service {
+func New(kv KVStore, users UserStore, enableMapping bool) *Service {
 	return &Service{
 		kv:                kv,
-		lookup:            lookup,
+		users:             users,
 		enableMapping:     enableMapping,
 		ownedTicketsLimit: 200,
 	}

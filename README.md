@@ -48,14 +48,51 @@ In **System Console > Plugins > GLPI**:
 | Default Category ID | numeric ITIL category for new tickets (optional) |
 | Notification Channel ID | channel that receives webhook notifications (optional) |
 | Webhook Secret | shared secret for the webhook endpoint (generated) |
+| Enable User Mapping | Mode B: attribute tickets to the GLPI user matching the requester's email (default: off) |
 
 The Mattermost **Site URL** must be set (System Console > Web Server) for the
 create-ticket dialog to work.
 
-### User mapping
+### Enterprise identity layer
 
-Commands like `/glpi my` match the Mattermost account email against GLPI user
-emails, cached for one hour. Users must have the same email in both systems.
+The plugin routes all user↔GLPI identity lookups through a centralized layer
+(`server/identity/`) with **two operating modes**:
+
+- **Mode A (default):** every API request runs under the GLPI integration
+  account. The real Mattermost employee is preserved as HTML metadata appended
+  to the ticket description (user ID, username, display name, email, team,
+  channel). Ticket creation **never fails** because an employee has no GLPI
+  account.
+- **Mode B (`Enable User Mapping` in System Console):** the plugin looks up the
+  mapped GLPI user for each Mattermost user and files tickets under that
+  requester. Discovery priority is **email → username → display name**.
+  Unmatched users fall back to Mode A automatically.
+
+Mappings are **persistent** in plugin KV and indexed by Mattermost user ID,
+email, GLPI user ID, and GLPI login. When mapping is enabled, "My Tickets"
+reads the requester's mapped tickets; when it is not, it reads the
+identity-service ownership record so the feature works without GLPI accounts.
+
+The mapped GLPI user's profiles determine the plugin **role**
+(`employee` / `technician` / `supervisor` / `manager` / `administrator`), which
+drives the visible UI: the "Assign to me" technician action is hidden for
+employees.
+
+> **Note:** in the default Mode A, role detection is inactive and the "Assign
+> to me" action is hidden for non-admins. Enable *Map Mattermost Users* and give
+> technicians a GLPI profile (`Technician`, `Hotliner`, `Read-Only`, …) to
+> restore role-driven UI.
+
+### Admin user-mapping page
+
+Mattermost **System Admins** get an **Admin** tab in the sidebar:
+
+- **Mapped users** table (Mattermost user ↔ GLPI login, profiles, role, last sync)
+- **Unmapped users** with a *Provision GLPI Account* action (creates the GLPI
+  user, never duplicates)
+- **Duplicate emails** detection
+- **Sync Users** (re-runs automatic discovery for every unmapped user),
+  **Clear Cache**, and **Refresh**
 
 ### Notifications from GLPI
 

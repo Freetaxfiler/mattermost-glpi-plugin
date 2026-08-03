@@ -9,6 +9,8 @@ import ConfirmDialog from './common/ConfirmDialog';
 interface TicketDetailsProps {
   ticketId: number;
   onNavigate: (view: ViewName) => void;
+  role?: string;
+  isSystemAdmin?: boolean;
 }
 
 const PRIORITY_OPTIONS = [
@@ -26,7 +28,7 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export default function TicketDetails({ ticketId, onNavigate }: TicketDetailsProps) {
+export default function TicketDetails({ ticketId, onNavigate, role, isSystemAdmin }: TicketDetailsProps) {
   const [ticket, setTicket] = useState<Ticket | null>(null);
   const [timeline, setTimeline] = useState<TimelinePage | null>(null);
   const [loading, setLoading] = useState(true);
@@ -38,6 +40,11 @@ export default function TicketDetails({ ticketId, onNavigate }: TicketDetailsPro
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
+  // "Assign to me" is a technician-only action. Hide it for definite
+  // employees; unknown roles and system admins keep it for backwards
+  // compatibility with deployments where role detection is not configured.
+  const canAssignToMe = !!isSystemAdmin || role !== 'employee';
 
   // Edit form
   const [editing, setEditing] = useState(false);
@@ -259,13 +266,15 @@ export default function TicketDetails({ ticketId, onNavigate }: TicketDetailsPro
           </div>
           <div className="glpi-flex glpi-gap-8">
             <StatusBadge status={ticket.status} />
-            <button
-              className="glpi-btn glpi-btn-secondary glpi-btn-sm"
-              onClick={handleAssignToMe}
-              disabled={submitting}
-            >
-              Assign to me
-            </button>
+            {canAssignToMe && (
+              <button
+                className="glpi-btn glpi-btn-secondary glpi-btn-sm"
+                onClick={handleAssignToMe}
+                disabled={submitting}
+              >
+                Assign to me
+              </button>
+            )}
             <button
               className="glpi-btn glpi-btn-secondary glpi-btn-sm"
               onClick={beginEdit}

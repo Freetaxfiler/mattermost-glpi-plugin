@@ -132,6 +132,24 @@ func (c *workflowTestClient) SearchKnowledge(context.Context, string, int, int, 
 func (c *workflowTestClient) SearchKnowledgeBaseCategories(context.Context, int) ([]glpi.KnowbaseCategorySummary, int, error) {
 	return nil, 0, nil
 }
+func (c *workflowTestClient) FindUserByEmail(context.Context, string) (*glpi.UserSummary, error) {
+	return nil, nil
+}
+func (c *workflowTestClient) FindUserByLogin(context.Context, string) (*glpi.UserSummary, error) {
+	return nil, nil
+}
+func (c *workflowTestClient) FindUserByName(context.Context, string, string) (*glpi.UserSummary, error) {
+	return nil, nil
+}
+func (c *workflowTestClient) GetUserProfiles(context.Context, int) ([]string, error) {
+	return nil, nil
+}
+func (c *workflowTestClient) ListUsers(context.Context, int, int) ([]glpi.UserSummary, int, error) {
+	return nil, 0, nil
+}
+func (c *workflowTestClient) CreateUser(context.Context, glpi.CreateUserRequest) (int, error) {
+	return 0, nil
+}
 func (c *workflowTestClient) UploadDocument(context.Context, string, []byte, int) (int, error) { return 0, nil }
 func (c *workflowTestClient) SearchITILCategories(context.Context, string, int) ([]glpi.CategorySummary, int, error) {
 	return nil, 0, nil

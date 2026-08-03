@@ -17,6 +17,9 @@ import type {
   DocumentInfo,
   NotificationListResponse,
   SystemInfo,
+  KBListResponse,
+  MyAssetsResponse,
+  AdminMappingsResponse,
 } from './types';
 
 const BASE = '/plugins/com.ntas.glpi/api/v1';
@@ -176,5 +179,47 @@ export const api = {
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
+  },
+
+  // ---- Identity / enterprise additions ----
+
+  getMyAssets(): Promise<MyAssetsResponse> {
+    return request<MyAssetsResponse>(`${BASE}/my-assets`);
+  },
+
+  getKBFavorites(): Promise<KBListResponse> {
+    return request<KBListResponse>(`${BASE}/knowledge/favorites`);
+  },
+
+  getKBRecent(): Promise<KBListResponse> {
+    return request<KBListResponse>(`${BASE}/knowledge/recent`);
+  },
+
+  setKBFavorite(id: number, subject: string, favorite: boolean): Promise<{ id: number; favorite: boolean }> {
+    return request<{ id: number; favorite: boolean }>(`${BASE}/knowledge/${id}/favorite`, {
+      method: favorite ? 'POST' : 'DELETE',
+      body: JSON.stringify({ subject }),
+    });
+  },
+
+  getAdminMappings(): Promise<AdminMappingsResponse> {
+    return request<AdminMappingsResponse>(`${BASE}/admin/mappings`);
+  },
+
+  adminSyncUsers(): Promise<{ mapped: number; skipped: number; errors: number; synced_at: number }> {
+    return request<{ mapped: number; skipped: number; errors: number; synced_at: number }>(`${BASE}/admin/sync`, {
+      method: 'POST',
+    });
+  },
+
+  adminProvisionUser(userId: string, profileId = 5, entityId = 0): Promise<{ mapping: unknown; glpi_user_id: number }> {
+    return request<{ mapping: unknown; glpi_user_id: number }>(`${BASE}/admin/provision`, {
+      method: 'POST',
+      body: JSON.stringify({ user_id: userId, profile_id: profileId, entity_id: entityId }),
+    });
+  },
+
+  adminClearCache(): Promise<{ cleared: boolean }> {
+    return request<{ cleared: boolean }>(`${BASE}/admin/clear-cache`, { method: 'POST' });
   },
 };

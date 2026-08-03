@@ -37,6 +37,7 @@ export interface AssetSummary {
   ID: number;
   Name: string;
   Serial: string;
+  ItemType?: string;
 }
 
 export interface KnowledgeSummary {
@@ -84,7 +85,61 @@ export interface UserResponse {
   username: string;
   email: string;
   glpi_user_id: number;
+  glpi_login: string;
+  glpi_email: string;
+  glpi_full_name: string;
+  role: string;
+  sync_status: string;
   is_system_admin: boolean;
+}
+
+// Knowledge base personalization (favorites / recently viewed).
+export interface KBItem {
+  id: number;
+  subject: string;
+  at: number;
+}
+
+export interface KBListResponse {
+  items: KBItem[];
+  count: number;
+}
+
+export interface MyAssetsResponse {
+  assets: AssetSummary[];
+  total: number;
+  count: number;
+  mapped: boolean;
+}
+
+// Admin identity-mapping page payload.
+export interface AdminMappingRecord {
+  mm_user_id: string;
+  mm_username: string;
+  mm_email: string;
+  mm_display_name: string;
+  glpi_user_id: number;
+  glpi_login: string;
+  glpi_full_name: string;
+  glpi_email: string;
+  profiles: string[];
+  role: string;
+  sync_status: string;
+  last_sync: number;
+}
+
+export interface AdminUnmappedUser {
+  user_id: string;
+  username: string;
+  email: string;
+}
+
+export interface AdminMappingsResponse {
+  mappings: AdminMappingRecord[];
+  unmapped: AdminUnmappedUser[];
+  duplicate_emails: AdminUnmappedUser[][];
+  mm_user_count: number;
+  mapping_enabled: boolean;
 }
 
 export interface TicketListResponse {
@@ -113,9 +168,11 @@ export type ViewName =
   | 'search'
   | 'ticket-details'
   | 'assets'
+  | 'my-assets'
   | 'knowledge-base'
   | 'notifications'
-  | 'settings';
+  | 'settings'
+  | 'admin';
 
 // ITIL categories for the ticket category picker.
 export interface CategorySummary {
@@ -208,10 +265,19 @@ export interface NotificationListResponse {
 // Plugin runtime information for the Settings page.
 export interface SystemInfo {
   plugin_version: string;
+  mattermost_version: string;
+  glpi_connected: boolean;
+  debug: boolean;
+  mapping: {
+    enabled: boolean;
+    mapped: number;
+    last_sync: number;
+  };
   retry_queue: {
     workers: number;
     max_attempts: number;
     backoff_base: number;
+    pending: number;
   };
   webhook_configured: boolean;
 }

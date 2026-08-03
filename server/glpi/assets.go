@@ -47,9 +47,10 @@ type AssetFilter struct {
 
 // AssetSummary is a compact asset row returned by the search engine.
 type AssetSummary struct {
-	ID     int
-	Name   string
-	Serial string
+	ID       int
+	Name     string
+	Serial   string
+	ItemType string
 }
 
 // SupportsUserFilter reports whether the given GLPI item type can be filtered

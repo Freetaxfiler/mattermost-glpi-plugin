@@ -98,6 +98,19 @@ func (q *RetryQueue) UpdateConfig(cfg *Configuration) {
 	q.p.API.LogInfo("GLPI retry queue configuration updated", "workers", q.workerCount, "max_attempts", q.maxAttempts)
 }
 
+// PendingCount returns the number of queued jobs currently waiting or retrying.
+func (q *RetryQueue) PendingCount() int {
+	if q == nil {
+		return 0
+	}
+	raw, _ := q.p.API.KVGet(q.indexKey)
+	var ids []string
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &ids)
+	}
+	return len(ids)
+}
+
 // Start launches background workers to process the queue.
 func (q *RetryQueue) Start() {
 	q.mu.Lock()

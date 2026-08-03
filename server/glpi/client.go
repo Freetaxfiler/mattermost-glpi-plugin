@@ -52,6 +52,12 @@ type GLPIClient interface {
 	SearchTickets(ctx context.Context, filter TicketFilter) ([]TicketSummary, int, error)
 
 	FindUserIDByEmail(ctx context.Context, email string) (int, error)
+	FindUserByEmail(ctx context.Context, email string) (*UserSummary, error)
+	FindUserByLogin(ctx context.Context, login string) (*UserSummary, error)
+	FindUserByName(ctx context.Context, firstname, lastname string) (*UserSummary, error)
+	GetUserProfiles(ctx context.Context, userID int) ([]string, error)
+	ListUsers(ctx context.Context, limit, page int) ([]UserSummary, int, error)
+	CreateUser(ctx context.Context, req CreateUserRequest) (int, error)
 	SearchAssets(ctx context.Context, filter AssetFilter) ([]AssetSummary, int, error)
 	SearchKnowledge(ctx context.Context, query string, categoryID, limit, page int) ([]KnowledgeSummary, int, error)
 	SearchKnowledgeBaseCategories(ctx context.Context, limit int) ([]KnowbaseCategorySummary, int, error)
