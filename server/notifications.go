@@ -73,14 +73,19 @@ func notificationFromWebhookEvent(ev handlers.WebhookEvent) Notification {
 // recordTicketCreatedNotification persists a ticket-creation event for the
 // notification center (used by the API/dialog create paths).
 func (p *Plugin) recordTicketCreatedNotification(ticketID int, subject string) {
-	p.recordNotification(Notification{
-		ID:        fmt.Sprintf("n-%d-%d", time.Now().UnixNano(), ticketID),
-		Type:      "ticket_created",
-		TicketID:  ticketID,
-		Title:     subject,
-		Status:    "New",
-		CreatedAt: time.Now().Unix(),
-	})
+	if svc := p.currentNotification(); svc != nil {
+		svc.NotifyTicketCreated(ticketID, subject)
+	} else {
+		// Fallback to legacy behavior if notification service not initialized
+		p.recordNotification(Notification{
+			ID:        fmt.Sprintf("n-%d-%d", time.Now().UnixNano(), ticketID),
+			Type:      "ticket_created",
+			TicketID:  ticketID,
+			Title:     subject,
+			Status:    "New",
+			CreatedAt: time.Now().Unix(),
+		})
+	}
 }
 
 // loadNotifications returns stored notifications (newest first).
@@ -157,7 +162,7 @@ func (p *Plugin) apiNotifications(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	uid, _ := p.apiAuth(r)
+	uid := currentUserID(r)
 	readAt := p.notificationReadAt(uid)
 	dismissed := p.notificationDismissed(uid)
 
@@ -187,7 +192,7 @@ func (p *Plugin) apiNotificationRead(w http.ResponseWriter, r *http.Request, id 
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	uid, _ := p.apiAuth(r)
+	uid := currentUserID(r)
 	for _, n := range p.loadNotifications() {
 		if n.ID == id {
 			current := p.notificationReadAt(uid)
@@ -207,7 +212,7 @@ func (p *Plugin) apiNotificationDismiss(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	uid, _ := p.apiAuth(r)
+	uid := currentUserID(r)
 	p.dismissNotification(uid, id)
 	writeOK(w, map[string]string{"status": "ok"})
 }

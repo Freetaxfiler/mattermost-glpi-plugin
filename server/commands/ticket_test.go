@@ -78,11 +78,13 @@ type workflowTestExecutor struct {
 	client glpi.GLPIClient
 }
 
-func (e workflowTestExecutor) GetConfiguration() *ConfigView { return &ConfigView{} }
-func (e workflowTestExecutor) GetGLPIClient() glpi.GLPIClient { return e.client }
+func (e workflowTestExecutor) GetConfiguration() *ConfigView                   { return &ConfigView{} }
+func (e workflowTestExecutor) GetGLPIClient() glpi.GLPIClient                  { return e.client }
 func (e workflowTestExecutor) OpenCreateTicketDialog(*model.CommandArgs) error { return nil }
-func (e workflowTestExecutor) GetGLPIUserID(string) (int, error) { return 0, nil }
-func (e workflowTestExecutor) GetMyTickets(string) ([]glpi.TicketSummary, int, error) { return nil, 0, nil }
+func (e workflowTestExecutor) GetGLPIUserID(string) (int, error)               { return 0, nil }
+func (e workflowTestExecutor) GetMyTickets(string) ([]glpi.TicketSummary, int, error) {
+	return nil, 0, nil
+}
 func (e workflowTestExecutor) IsSystemAdmin(string) bool { return false }
 func (e workflowTestExecutor) LatestFileAttachment(string, string) (string, []byte, error) {
 	return "", nil, nil
@@ -101,7 +103,9 @@ func (c *workflowTestClient) KillSession(context.Context) error { return nil }
 func (c *workflowTestClient) CreateTicket(context.Context, glpi.CreateTicketRequest) (*glpi.CreateTicketResponse, error) {
 	return &glpi.CreateTicketResponse{}, nil
 }
-func (c *workflowTestClient) GetTicket(context.Context, int) (*glpi.Ticket, error) { return c.ticket, nil }
+func (c *workflowTestClient) GetTicket(context.Context, int) (*glpi.Ticket, error) {
+	return c.ticket, nil
+}
 func (c *workflowTestClient) UpdateTicket(_ context.Context, _ int, input map[string]interface{}) error {
 	copyInput := make(map[string]interface{}, len(input))
 	for key, value := range input {
@@ -110,7 +114,7 @@ func (c *workflowTestClient) UpdateTicket(_ context.Context, _ int, input map[st
 	c.updates = append(c.updates, copyInput)
 	return nil
 }
-func (c *workflowTestClient) DeleteTicket(context.Context, int) error { return nil }
+func (c *workflowTestClient) DeleteTicket(context.Context, int) error              { return nil }
 func (c *workflowTestClient) AddFollowup(context.Context, int, string, bool) error { return nil }
 func (c *workflowTestClient) AddSolution(context.Context, int, string) error {
 	c.solutionCalls++
@@ -150,11 +154,21 @@ func (c *workflowTestClient) ListUsers(context.Context, int, int) ([]glpi.UserSu
 func (c *workflowTestClient) CreateUser(context.Context, glpi.CreateUserRequest) (int, error) {
 	return 0, nil
 }
-func (c *workflowTestClient) UploadDocument(context.Context, string, []byte, int) (int, error) { return 0, nil }
+func (c *workflowTestClient) UploadDocument(context.Context, string, []byte, int) (int, error) {
+	return 0, nil
+}
 func (c *workflowTestClient) SearchITILCategories(context.Context, string, int) ([]glpi.CategorySummary, int, error) {
 	return nil, 0, nil
 }
-func (c *workflowTestClient) GetKnowbaseItem(context.Context, int) (*glpi.KnowledgeArticle, error) { return nil, nil }
-func (c *workflowTestClient) GetAsset(context.Context, string, int) (*glpi.AssetDetail, error) { return nil, nil }
-func (c *workflowTestClient) ListTicketDocuments(context.Context, int) ([]glpi.DocumentInfo, error) { return nil, nil }
-func (c *workflowTestClient) GetDocumentContent(context.Context, int) ([]byte, string, error) { return nil, "", nil }
+func (c *workflowTestClient) GetKnowbaseItem(context.Context, int) (*glpi.KnowledgeArticle, error) {
+	return nil, nil
+}
+func (c *workflowTestClient) GetAsset(context.Context, string, int) (*glpi.AssetDetail, error) {
+	return nil, nil
+}
+func (c *workflowTestClient) ListTicketDocuments(context.Context, int) ([]glpi.DocumentInfo, error) {
+	return nil, nil
+}
+func (c *workflowTestClient) GetDocumentContent(context.Context, int) ([]byte, string, error) {
+	return nil, "", nil
+}

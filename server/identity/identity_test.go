@@ -17,8 +17,8 @@ type stubKV struct {
 
 func newStubKV() *stubKV { return &stubKV{data: map[string][]byte{}, ttl: map[string]int64{}} }
 
-func (k *stubKV) KVGet(key string) ([]byte, *model.AppError)          { return k.data[key], nil }
-func (k *stubKV) KVSet(key string, value []byte) *model.AppError       { k.data[key] = value; return nil }
+func (k *stubKV) KVGet(key string) ([]byte, *model.AppError)     { return k.data[key], nil }
+func (k *stubKV) KVSet(key string, value []byte) *model.AppError { k.data[key] = value; return nil }
 func (k *stubKV) KVSetWithExpiry(key string, value []byte, ttl int64) *model.AppError {
 	k.data[key] = value
 	k.ttl[key] = ttl
@@ -162,13 +162,13 @@ func TestDiscoveryPriorityEmailOverLogin(t *testing.T) {
 
 func TestRoleMapping(t *testing.T) {
 	cases := map[string]Role{
-		"Self-Service":   RoleEmployee,
-		"Technician":     RoleTechnician,
-		"Hotliner":       RoleTechnician,
-		"Manager":        RoleManager,
-		"Supervisor":     RoleSupervisor,
-		"Super-Admin":    RoleAdministrator,
-		"Admin":          RoleAdministrator,
+		"Self-Service":    RoleEmployee,
+		"Technician":      RoleTechnician,
+		"Hotliner":        RoleTechnician,
+		"Manager":         RoleManager,
+		"Supervisor":      RoleSupervisor,
+		"Super-Admin":     RoleAdministrator,
+		"Admin":           RoleAdministrator,
 		"Unknown Profile": RoleEmployee,
 		"":                RoleEmployee,
 	}

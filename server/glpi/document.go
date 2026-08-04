@@ -66,11 +66,11 @@ func (c *Client) GetDocumentContent(ctx context.Context, docID int) ([]byte, str
 // DefaultAllowedMIMEs returns the default set of allowed MIME types for file uploads.
 func DefaultAllowedMIMEs() map[string]bool {
 	return map[string]bool{
-		"image/jpeg":               true,
-		"image/png":                true,
-		"application/pdf":          true,
+		"image/jpeg":                true,
+		"image/png":                 true,
+		"application/pdf":           true,
 		"text/plain; charset=utf-8": true,
-		"text/plain":               true,
+		"text/plain":                true,
 	}
 }
 

@@ -11,11 +11,11 @@ import (
 // KV key layout for the permanent mapping store. Mattermost KV has no prefix
 // listing, so a single index key holds the set of mapped Mattermost user ids.
 const (
-	mapKeyIDPrefix    = "glpi_map_id:"
-	mapKeyEmailPrefix = "glpi_map_eml:"
+	mapKeyIDPrefix     = "glpi_map_id:"
+	mapKeyEmailPrefix  = "glpi_map_eml:"
 	mapKeyGLPIIDPrefix = "glpi_map_glpi:"
-	mapKeyLoginPrefix = "glpi_map_login:"
-	mapKeyIndex       = "glpi_map_index"
+	mapKeyLoginPrefix  = "glpi_map_login:"
+	mapKeyIndex        = "glpi_map_index"
 )
 
 // ErrMappingNotFound is returned when no mapping exists for a lookup key.

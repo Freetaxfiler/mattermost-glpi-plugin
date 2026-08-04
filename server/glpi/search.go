@@ -109,11 +109,11 @@ type TicketFilter struct {
 	RequesterID     int
 	AssigneeID      int
 	TitleQuery      string
-	Status          int // exact status match; 0 = any
-	StatusBelow     int // status < value (e.g. 5 = all open statuses 1-4); 0 = disabled
-	PriorityAtLeast int // priority >= value; 0 = disabled
+	Status          int    // exact status match; 0 = any
+	StatusBelow     int    // status < value (e.g. 5 = all open statuses 1-4); 0 = disabled
+	PriorityAtLeast int    // priority >= value; 0 = disabled
 	DueDateBefore   string // due_date < value (YYYY-MM-DD); empty = disabled
-	Sort            int // search option ID; 0 = default (date modified)
+	Sort            int    // search option ID; 0 = default (date modified)
 	Order           string // "ASC" or "DESC"; empty = DESC
 	Limit           int
 	Page            int // 1-based page; 0 or 1 = first page

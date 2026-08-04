@@ -11,6 +11,7 @@ import (
 	"github.com/Freetaxfiler/mattermost-glpi-plugin/server/commands"
 	"github.com/Freetaxfiler/mattermost-glpi-plugin/server/glpi"
 	"github.com/Freetaxfiler/mattermost-glpi-plugin/server/identity"
+	"github.com/Freetaxfiler/mattermost-glpi-plugin/server/middleware"
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin"
 	"github.com/mattermost/mattermost/server/public/pluginapi"
@@ -28,9 +29,13 @@ type Plugin struct {
 	configuration     *Configuration
 	glpiClient        glpi.GLPIClient
 	identitySvc       *identity.Service
+	notificationSvc   *NotificationService
 	botUserID         string
 	// retry queue for durable retry of non-idempotent operations
-	retryQueue        *RetryQueue
+	retryQueue *RetryQueue
+	// single authentication layer for the REST API (lazily initialized)
+	authMWOnce sync.Once
+	authMW     *middleware.Middleware
 }
 
 // OnActivate is called when the plugin is activated.
@@ -64,9 +69,15 @@ func (p *Plugin) OnActivate() error {
 	}
 	p.initializeIdentity()
 
+	// Initialize notification service
+	p.notificationSvc = NewNotificationService(p)
+
 	// initialize and start retry queue
 	p.retryQueue = newRetryQueueFromConfig(p)
 	p.retryQueue.Start()
+
+	// Register this plugin instance for the ticket service's dialog handler
+	SetCurrentPlugin(p)
 
 	return nil
 }
@@ -173,6 +184,13 @@ func (p *Plugin) currentIdentity() *identity.Service {
 	p.configurationLock.RLock()
 	defer p.configurationLock.RUnlock()
 	return p.identitySvc
+}
+
+// currentNotification returns the notification service, or nil before it is initialized.
+func (p *Plugin) currentNotification() *NotificationService {
+	p.configurationLock.RLock()
+	defer p.configurationLock.RUnlock()
+	return p.notificationSvc
 }
 
 // loadMMUser builds the Mattermost identity for a user, resolving team and

@@ -12,7 +12,19 @@ import (
 	"github.com/Freetaxfiler/mattermost-glpi-plugin/server/commands"
 	"github.com/Freetaxfiler/mattermost-glpi-plugin/server/glpi"
 	"github.com/Freetaxfiler/mattermost-glpi-plugin/server/identity"
+	"github.com/Freetaxfiler/mattermost-glpi-plugin/server/middleware"
 )
+
+// currentUserID returns the authenticated Mattermost user's ID from the
+// request context, or "" if the request is unauthenticated. The auth
+// middleware guarantees a non-nil user for every request that reaches an API
+// handler, so the empty check is only defensive.
+func currentUserID(r *http.Request) string {
+	if cu := middleware.FromRequest(r); cu != nil {
+		return cu.UserID
+	}
+	return ""
+}
 
 // apiResponse is the standard envelope for all API JSON responses.
 type apiResponse struct {
@@ -35,25 +47,13 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, apiResponse{Status: "error", Error: msg})
 }
 
-func (p *Plugin) apiAuth(r *http.Request) (string, error) {
-	uid := r.Header.Get("Mattermost-User-Id")
-	if uid == "" {
-		return "", fmt.Errorf("not authenticated")
-	}
-	return uid, nil
-}
-
 // handleAPI dispatches /api/v1/* requests.
 func (p *Plugin) handleAPI(w http.ResponseWriter, r *http.Request) {
-	// Every /api/v1 endpoint exposes or modifies user data, so require an
-	// authenticated Mattermost session on all of them. Unauthenticated
-	// callers must not reach ticket, asset, knowledge-base, or configuration
-	// data. (Webhooks, slash commands, and dialog submissions are routed
-	// outside this handler and are unaffected.)
-	if _, err := p.apiAuth(r); err != nil {
-		writeError(w, http.StatusUnauthorized, "authentication required")
-		return
-	}
+	// Authentication is handled once, centrally, by the auth middleware
+	// (authMiddleware().RequireAuth wraps this handler in ServeHTTP). Every
+	// handler below receives the authenticated CurrentUser via the request
+	// context instead of re-validating. (Webhooks, slash commands, and dialog
+	// submissions are routed outside this handler and are unaffected.)
 
 	// Strip the /api/v1 prefix
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1")
@@ -132,10 +132,10 @@ func (p *Plugin) apiStatus(w http.ResponseWriter, r *http.Request) {
 	config := p.currentConfiguration()
 
 	resp := map[string]interface{}{
-		"glpi_url":     "",
-		"configured":   false,
-		"glpi_version": "",
-		"glpi_online":  false,
+		"glpi_url":       "",
+		"configured":     false,
+		"glpi_version":   "",
+		"glpi_online":    false,
 		"plugin_version": "0.2.0",
 	}
 
@@ -260,8 +260,8 @@ func (p *Plugin) apiTickets(w http.ResponseWriter, r *http.Request, parts []stri
 }
 
 func (p *Plugin) apiListTickets(w http.ResponseWriter, r *http.Request) {
-	uid, err := p.apiAuth(r)
-	if err != nil {
+	uid := currentUserID(r)
+	if uid == "" {
 		writeError(w, http.StatusUnauthorized, "authentication required")
 		return
 	}
@@ -369,8 +369,8 @@ func (p *Plugin) apiListTickets(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Plugin) apiCreateTicket(w http.ResponseWriter, r *http.Request) {
-	uid, err := p.apiAuth(r)
-	if err != nil {
+	uid := currentUserID(r)
+	if uid == "" {
 		writeError(w, http.StatusUnauthorized, "authentication required")
 		return
 	}
@@ -407,45 +407,26 @@ func (p *Plugin) apiCreateTicket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	requester, mm := p.resolveRequesterFor(uid, "", "")
-	requesterID := requester.GLPIUserID
-	content := strings.TrimSpace(req.Content)
-	if requester.GLPIUserID == 0 && mm != nil {
-		// Integration account is the requester; preserve the Mattermost identity
-		// as ticket metadata so ticket creation never loses the human.
-		content += mm.MetadataHTML()
-	}
-
-	categoryID := req.CategoryID
-	if categoryID <= 0 && config != nil && strings.TrimSpace(config.DefaultCategory) != "" {
-		if parsed, err := strconv.Atoi(strings.TrimSpace(config.DefaultCategory)); err == nil && parsed > 0 {
-			categoryID = parsed
-		}
-	}
-
-	createReq := glpi.CreateTicketRequest{
-		Name:           strings.TrimSpace(req.Subject),
-		Content:        content,
-		Priority:       req.Priority,
-		Urgency:        req.Urgency,
-		Type:           req.Type,
-		ITILCategoryID: categoryID,
-		EntityID:       entityID,
-		RequesterID:    requesterID,
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-
-	result, err := client.CreateTicket(ctx, createReq)
+	// Use the centralized ticket service
+	svc := NewTicketService(p)
+	result, err := svc.CreateTicket(r.Context(), TicketInput{
+		Subject:       strings.TrimSpace(req.Subject),
+		Content:       strings.TrimSpace(req.Content),
+		Type:          req.Type,
+		Priority:      req.Priority,
+		Urgency:       req.Urgency,
+		CategoryID:    req.CategoryID,
+		EntityID:      entityID,
+		CreatorUserID: uid,
+		RequestID:     fmt.Sprintf("api-%d", time.Now().UnixNano()),
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "ticket creation failed: "+err.Error())
 		return
 	}
 
-	p.recordOwnership(uid, result.ID)
-	p.recordTicketCreatedNotification(result.ID, createReq.Name)
-	writeOK(w, result)
+	p.recordTicketCreatedNotification(result.Ticket.ID, strings.TrimSpace(req.Subject))
+	writeOK(w, result.Ticket)
 }
 
 func (p *Plugin) apiGetTicket(w http.ResponseWriter, r *http.Request, ticketID int) {
@@ -488,6 +469,11 @@ func (p *Plugin) apiUpdateTicket(w http.ResponseWriter, r *http.Request, ticketI
 		return
 	}
 
+	// Publish websocket event so UI refreshes (ticket detail, dashboard, notifications)
+	if svc := p.currentNotification(); svc != nil {
+		svc.NotifyTicketUpdated(ticketID, "update", "", "updated")
+	}
+
 	writeOK(w, map[string]string{"status": "updated"})
 }
 
@@ -504,6 +490,10 @@ func (p *Plugin) apiDeleteTicket(w http.ResponseWriter, r *http.Request, ticketI
 	if err := client.DeleteTicket(ctx, ticketID); err != nil {
 		writeError(w, http.StatusInternalServerError, "ticket delete failed: "+err.Error())
 		return
+	}
+
+	if svc := p.currentNotification(); svc != nil {
+		svc.NotifyTicketUpdated(ticketID, "delete", "", "deleted")
 	}
 
 	writeOK(w, map[string]string{"status": "deleted"})
@@ -538,6 +528,10 @@ func (p *Plugin) apiAddFollowup(w http.ResponseWriter, r *http.Request, ticketID
 		return
 	}
 
+	if svc := p.currentNotification(); svc != nil {
+		svc.NotifyFollowupAdded(ticketID, currentUserID(r), req.IsPrivate)
+	}
+
 	writeOK(w, map[string]string{"status": "followup_added"})
 }
 
@@ -567,6 +561,10 @@ func (p *Plugin) apiAddSolution(w http.ResponseWriter, r *http.Request, ticketID
 	if err := client.AddSolution(ctx, ticketID, req.Content); err != nil {
 		writeError(w, http.StatusInternalServerError, "add solution failed: "+err.Error())
 		return
+	}
+
+	if svc := p.currentNotification(); svc != nil {
+		svc.NotifySolutionAdded(ticketID)
 	}
 
 	writeOK(w, map[string]string{"status": "solution_added"})
@@ -600,9 +598,9 @@ func (p *Plugin) apiGetTimeline(w http.ResponseWriter, r *http.Request, ticketID
 
 	// Private timeline events are only exposed to system administrators to
 	// prevent leaking confidential follow-ups through the shared GLPI API
-	// account. handleAPI has already authenticated the request, so apiAuth
-	// here only recovers the user ID for the role check.
-	if uid, err := p.apiAuth(r); err == nil && !p.IsSystemAdmin(uid) {
+	// account. The auth middleware already attached the authenticated user to
+	// the request context.
+	if cu := middleware.FromRequest(r); cu != nil && !cu.IsSystemAdmin {
 		timeline.Events = commands.VisibleTimelineEvents(timeline.Events, false)
 		timeline.Total = len(timeline.Events)
 		timeline.HasMore = false
@@ -612,8 +610,7 @@ func (p *Plugin) apiGetTimeline(w http.ResponseWriter, r *http.Request, ticketID
 }
 
 func (p *Plugin) apiAttachFile(w http.ResponseWriter, r *http.Request, ticketID int) {
-	_, err := p.apiAuth(r)
-	if err != nil {
+	if middleware.FromRequest(r) == nil {
 		writeError(w, http.StatusUnauthorized, "authentication required")
 		return
 	}
@@ -661,6 +658,10 @@ func (p *Plugin) apiAttachFile(w http.ResponseWriter, r *http.Request, ticketID 
 		return
 	}
 
+	if svc := p.currentNotification(); svc != nil {
+		svc.NotifyAttachmentAdded(ticketID, header.Filename)
+	}
+
 	writeOK(w, map[string]interface{}{
 		"document_id": docID,
 		"filename":    header.Filename,
@@ -675,8 +676,8 @@ func (p *Plugin) apiAssets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	uid, err := p.apiAuth(r)
-	if err != nil {
+	uid := currentUserID(r)
+	if uid == "" {
 		writeError(w, http.StatusUnauthorized, "authentication required")
 		return
 	}
@@ -826,8 +827,8 @@ func (p *Plugin) apiUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	uid, err := p.apiAuth(r)
-	if err != nil {
+	uid := currentUserID(r)
+	if uid == "" {
 		writeError(w, http.StatusUnauthorized, "authentication required")
 		return
 	}
@@ -918,8 +919,8 @@ func (p *Plugin) apiSystem(w http.ResponseWriter, r *http.Request) {
 		"glpi_connected":     config != nil && config.GLPIURL != "" && p.GetGLPIClient() != nil,
 		"debug":              config != nil && config.EnableDebug,
 		"mapping": map[string]interface{}{
-			"enabled": mappingEnabled,
-			"mapped":  mappedCount,
+			"enabled":   mappingEnabled,
+			"mapped":    mappedCount,
 			"last_sync": lastSync,
 		},
 		"retry_queue": map[string]interface{}{
@@ -941,7 +942,7 @@ func (p *Plugin) apiDashboard(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	uid, _ := p.apiAuth(r)
+	uid := currentUserID(r)
 
 	client := p.GetGLPIClient()
 	if client == nil {
@@ -1090,8 +1091,8 @@ func (p *Plugin) apiKnowledgeArticle(w http.ResponseWriter, r *http.Request, idS
 		return
 	}
 
-	uid, err := p.apiAuth(r)
-	if err != nil {
+	uid := currentUserID(r)
+	if uid == "" {
 		writeError(w, http.StatusUnauthorized, "authentication required")
 		return
 	}

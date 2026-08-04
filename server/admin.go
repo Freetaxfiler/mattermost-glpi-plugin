@@ -11,6 +11,7 @@ import (
 
 	"github.com/Freetaxfiler/mattermost-glpi-plugin/server/glpi"
 	"github.com/Freetaxfiler/mattermost-glpi-plugin/server/identity"
+	"github.com/Freetaxfiler/mattermost-glpi-plugin/server/middleware"
 	"github.com/mattermost/mattermost/server/public/model"
 )
 
@@ -18,14 +19,15 @@ import (
 const lastSyncKey = "glpi_last_sync"
 
 // apiAdmin guards every /api/v1/admin/* route behind system-admin membership
-// and dispatches to the sub-handlers.
+// and dispatches to the sub-handlers. Authentication and the system-admin flag
+// come from the auth middleware request context.
 func (p *Plugin) apiAdmin(w http.ResponseWriter, r *http.Request, parts []string) {
-	uid, err := p.apiAuth(r)
-	if err != nil {
+	cu := middleware.FromRequest(r)
+	if cu == nil {
 		writeError(w, http.StatusUnauthorized, "authentication required")
 		return
 	}
-	if !p.IsSystemAdmin(uid) {
+	if !cu.IsSystemAdmin {
 		writeError(w, http.StatusForbidden, "administrator privileges required")
 		return
 	}
@@ -107,11 +109,11 @@ func (p *Plugin) apiAdminMappings(w http.ResponseWriter, r *http.Request) {
 	sort.Slice(mappings, func(i, j int) bool { return mappings[i].LastSync > mappings[j].LastSync })
 
 	writeOK(w, map[string]interface{}{
-		"mappings":        mappings,
-		"unmapped":        unmapped,
+		"mappings":         mappings,
+		"unmapped":         unmapped,
 		"duplicate_emails": duplicates,
-		"mm_user_count":   len(mmUsers),
-		"mapping_enabled": p.currentConfiguration() != nil && p.currentConfiguration().EnableUserMapping,
+		"mm_user_count":    len(mmUsers),
+		"mapping_enabled":  p.currentConfiguration() != nil && p.currentConfiguration().EnableUserMapping,
 	})
 }
 
@@ -238,8 +240,8 @@ func (p *Plugin) apiMyAssets(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	uid, err := p.apiAuth(r)
-	if err != nil {
+	uid := currentUserID(r)
+	if uid == "" {
 		writeError(w, http.StatusUnauthorized, "authentication required")
 		return
 	}

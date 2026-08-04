@@ -270,9 +270,26 @@ func (q *RetryQueue) processCreateTicket(job *QueueJob) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	res, err := client.CreateTicket(ctx, payload.Request)
+
+	// Replay through the centralized ticket service so retry follows the exact
+	// same pipeline as the API and dialog paths (requester resolution, default
+	// entity/category, metadata, ownership, notifications, websocket push).
+	svc := NewTicketService(q.p)
+	result, err := svc.CreateTicket(ctx, TicketInput{
+		Subject:       payload.Request.Name,
+		Content:       payload.Request.Content,
+		Type:          payload.Request.Type,
+		Priority:      payload.Request.Priority,
+		Urgency:       payload.Request.Urgency,
+		CategoryID:    payload.Request.ITILCategoryID,
+		EntityID:      payload.Request.EntityID,
+		RequesterID:   payload.Request.RequesterID,
+		CreatorUserID: payload.RequesterMattermost,
+		ChannelID:     payload.ChannelID,
+		RequestID:     payload.RequestID,
+	})
 	if err == nil {
-		q.p.recordOwnership(payload.RequesterMattermost, res.ID)
+		res := result.Ticket
 		q.p.API.LogInfo("queued ticket created", "job_id", job.ID, "ticket_id", res.ID)
 		// notify channel or user if present
 		if payload.ChannelID != "" && q.p.botUserID != "" {

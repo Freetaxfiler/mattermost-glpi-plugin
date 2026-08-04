@@ -7,26 +7,26 @@ import (
 
 // Configuration holds the plugin settings used for GLPI integration.
 type Configuration struct {
-	GLPIURL               string   `json:"glpi_url"`
-	AppToken              string   `json:"app_token"`
-	UserToken             string   `json:"user_token"`
-	DefaultEntity         string   `json:"default_entity"`
-	DefaultCategory       string   `json:"default_category"`
-	WebhookSecret         string   `json:"webhook_secret"`
-	NotificationChannelID string   `json:"notification_channel_id"`
-	EnableDebug           bool     `json:"enable_debug"`
-	EnableUserMapping     bool     `json:"enable_user_mapping"`
+	GLPIURL               string `json:"glpi_url"`
+	AppToken              string `json:"app_token"`
+	UserToken             string `json:"user_token"`
+	DefaultEntity         string `json:"default_entity"`
+	DefaultCategory       string `json:"default_category"`
+	WebhookSecret         string `json:"webhook_secret"`
+	NotificationChannelID string `json:"notification_channel_id"`
+	EnableDebug           bool   `json:"enable_debug"`
+	EnableUserMapping     bool   `json:"enable_user_mapping"`
 
 	// Production hardening options (optional)
-	MaxUploadSizeBytes           int      `json:"max_upload_size_bytes"`
-	AllowedMIMEs                []string `json:"allowed_mimes"`
-	RateLimitRPS                int      `json:"rate_limit_rps"`
-	RequestTimeoutSeconds       int      `json:"request_timeout_seconds"`
-	WebhookReplayWindowSeconds  int      `json:"webhook_replay_window_seconds"`
+	MaxUploadSizeBytes         int      `json:"max_upload_size_bytes"`
+	AllowedMIMEs               []string `json:"allowed_mimes"`
+	RateLimitRPS               int      `json:"rate_limit_rps"`
+	RequestTimeoutSeconds      int      `json:"request_timeout_seconds"`
+	WebhookReplayWindowSeconds int      `json:"webhook_replay_window_seconds"`
 	// Retry queue configuration
-	RetryQueueWorkerCount        int      `json:"retry_queue_worker_count"`
-	RetryQueueMaxAttempts        int      `json:"retry_queue_max_attempts"`
-	RetryQueueBackoffBaseSeconds int      `json:"retry_queue_backoff_base_seconds"`
+	RetryQueueWorkerCount        int `json:"retry_queue_worker_count"`
+	RetryQueueMaxAttempts        int `json:"retry_queue_max_attempts"`
+	RetryQueueBackoffBaseSeconds int `json:"retry_queue_backoff_base_seconds"`
 }
 
 // Clone returns a deep copy of the configuration.

@@ -22,9 +22,12 @@ func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Req
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none';")
 
-	// REST API for the webapp plugin
+	// REST API for the webapp plugin. Authentication is handled centrally by
+	// the auth middleware, which resolves the Mattermost session (via the
+	// server-injected Mattermost-User-Id header), loads the user, and attaches
+	// CurrentUser to the request context before the handler runs.
 	if strings.HasPrefix(r.URL.Path, "/api/v1") {
-		p.handleAPI(w, r)
+		p.authMiddleware().RequireAuth(http.HandlerFunc(p.handleAPI)).ServeHTTP(w, r)
 		return
 	}
 
@@ -242,22 +245,34 @@ func (p *Plugin) handleDialogSubmission(ctx context.Context, req *model.SubmitDi
 	reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	createReq := glpi.CreateTicketRequest{
-		Name:           subject,
-		Content:        description,
-		Priority:       priority,
-		Urgency:        urgency,
-		Type:           typeID,
-		ITILCategoryID: categoryID,
-		EntityID:       entityID,
-		RequesterID:    requesterID,
-	}
-
-	result, err := client.CreateTicket(reqCtx, createReq)
+	// Use the centralized ticket service
+	svc := NewTicketService(p)
+	result, err := svc.CreateTicket(reqCtx, TicketInput{
+		Subject:       subject,
+		Content:       description,
+		Type:          typeID,
+		Priority:      priority,
+		Urgency:       urgency,
+		CategoryID:    categoryID,
+		EntityID:      entityID,
+		RequesterID:   requesterID,
+		CreatorUserID: req.UserId,
+		ChannelID:     req.ChannelId,
+		RequestID:     reqID,
+	})
 	if err != nil {
 		// attempt durable enqueue for retry
 		payload := CreateTicketPayload{
-			Request:             createReq,
+			Request: glpi.CreateTicketRequest{
+				Name:           subject,
+				Content:        description,
+				Priority:       priority,
+				Urgency:        urgency,
+				Type:           typeID,
+				ITILCategoryID: categoryID,
+				EntityID:       entityID,
+				RequesterID:    requesterID,
+			},
 			RequesterMattermost: req.UserId,
 			ChannelID:           req.ChannelId,
 			RequestID:           reqID,
@@ -266,10 +281,14 @@ func (p *Plugin) handleDialogSubmission(ctx context.Context, req *model.SubmitDi
 			if err2 := p.EnqueueCreateTicket(reqCtx, payload); err2 == nil {
 				// inform user that their operation has been queued for retry
 				msg := "⚠️ Ticket creation failed due to a temporary error and has been queued for retry. You will be notified if creation succeeds."
-				post := &model.Post{UserId: p.botUserID, ChannelId: req.ChannelId, Message: msg}
-				p.API.SendEphemeralPost(req.UserId, post)
-				p.API.LogWarn("CreateTicket failed, enqueued for retry", "err", err.Error(), "job_info", payload)
-				return nil, nil
+				post := &model.Post{
+					UserId:    p.botUserID,
+					ChannelId: req.ChannelId,
+					Message:   msg,
+				}
+				if _, appErr := p.API.CreatePost(post); appErr != nil {
+					p.API.LogWarn("failed to post GLPI notification to channel", "err", appErr.Error())
+				}
 			}
 			// enqueue failed; fallthrough to return original error
 		}
@@ -278,10 +297,10 @@ func (p *Plugin) handleDialogSubmission(ctx context.Context, req *model.SubmitDi
 
 	ticketURL := ""
 	if config != nil {
-		ticketURL = strings.TrimRight(config.GLPIURL, "/") + "/front/ticket.form.php?id=" + strconv.Itoa(result.ID)
+		ticketURL = strings.TrimRight(config.GLPIURL, "/") + "/front/ticket.form.php?id=" + strconv.Itoa(result.Ticket.ID)
 	}
 
-	message := fmt.Sprintf("✅ Ticket #%d created successfully.\n%s", result.ID, ticketURL)
+	message := fmt.Sprintf("✅ Ticket #%d created successfully.\n%s", result.Ticket.ID, ticketURL)
 	post := &model.Post{
 		UserId:    p.botUserID,
 		ChannelId: req.ChannelId,
@@ -289,54 +308,57 @@ func (p *Plugin) handleDialogSubmission(ctx context.Context, req *model.SubmitDi
 	}
 	p.API.SendEphemeralPost(req.UserId, post)
 
-	p.recordOwnership(req.UserId, result.ID)
-	p.recordTicketCreatedNotification(result.ID, createReq.Name)
-	p.API.LogInfo("Ticket created from dialog", "id", result.ID, "user_id", req.UserId, "request_id", reqID)
+	p.recordOwnership(req.UserId, result.Ticket.ID)
+	p.recordTicketCreatedNotification(result.Ticket.ID, subject)
+	p.API.LogInfo("Ticket created from dialog", "id", result.Ticket.ID, "user_id", req.UserId, "request_id", reqID)
 	return nil, nil
 }
 
 // notifyWebhookEvent posts a GLPI notification into Mattermost.
 func (p *Plugin) notifyWebhookEvent(event handlers.WebhookEvent) {
-	// Persist for the webapp notification center before posting.
-	p.recordNotification(notificationFromWebhookEvent(event))
+	if svc := p.currentNotification(); svc != nil {
+		svc.NotifyWebhookEvent(event)
+	} else {
+		// Legacy fallback
+		p.recordNotification(notificationFromWebhookEvent(event))
 
-	message := formatWebhookMessage(event)
+		message := formatWebhookMessage(event)
 
-	config := p.currentConfiguration()
+		config := p.currentConfiguration()
 
-	posted := false
-	if config != nil && strings.TrimSpace(config.NotificationChannelID) != "" && p.botUserID != "" {
-		post := &model.Post{
-			UserId:    p.botUserID,
-			ChannelId: strings.TrimSpace(config.NotificationChannelID),
-			Message:   message,
-		}
-		if _, appErr := p.API.CreatePost(post); appErr != nil {
-			p.API.LogWarn("failed to post GLPI notification to channel", "err", appErr.Error())
-		} else {
+		posted := false
+		if config != nil && strings.TrimSpace(config.NotificationChannelID) != "" && p.botUserID != "" {
+			post := &model.Post{
+				UserId:    p.botUserID,
+				ChannelId: strings.TrimSpace(config.NotificationChannelID),
+				Message:   message,
+			}
+			if _, appErr := p.API.CreatePost(post); appErr != nil {
+				p.API.LogWarn("failed to post GLPI notification to channel", "err", appErr.Error())
+			}
 			posted = true
 		}
-	}
 
-	if event.RequesterEmail != "" && p.botUserID != "" {
-		if user, appErr := p.API.GetUserByEmail(event.RequesterEmail); appErr == nil && user != nil {
-			if channel, appErr := p.API.GetDirectChannel(p.botUserID, user.Id); appErr == nil && channel != nil {
-				post := &model.Post{
-					UserId:    p.botUserID,
-					ChannelId: channel.Id,
-					Message:   message,
-				}
-				if _, appErr := p.API.CreatePost(post); appErr != nil {
-					p.API.LogWarn("failed to DM GLPI notification", "err", appErr.Error())
-				} else {
-					posted = true
+		if event.RequesterEmail != "" && p.botUserID != "" {
+			if user, appErr := p.API.GetUserByEmail(event.RequesterEmail); appErr == nil && user != nil {
+				if channel, appErr := p.API.GetDirectChannel(p.botUserID, user.Id); appErr == nil && channel != nil {
+					post := &model.Post{
+						UserId:    p.botUserID,
+						ChannelId: channel.Id,
+						Message:   message,
+					}
+					if _, appErr := p.API.CreatePost(post); appErr != nil {
+						p.API.LogWarn("failed to DM GLPI notification", "err", appErr.Error())
+					} else {
+						posted = true
+					}
 				}
 			}
 		}
-	}
 
-	if !posted {
-		p.API.LogInfo("GLPI webhook received but no notification target was available", "event", event.Event, "ticket_id", event.TicketID)
+		if !posted {
+			p.API.LogInfo("GLPI webhook received but no notification target was available", "event", event.Event, "ticket_id", event.TicketID)
+		}
 	}
 }
 

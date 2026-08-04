@@ -8,12 +8,13 @@ import (
 )
 
 // Per-user knowledge base personalization, stored in plugin KV:
-//   glpi_kb_fav_<userID>   → []kbItem  (favorites, newest first)
-//   glpi_kb_recent_<userID> → []kbItem  (recently viewed, newest first)
+//
+//	glpi_kb_fav_<userID>   → []kbItem  (favorites, newest first)
+//	glpi_kb_recent_<userID> → []kbItem  (recently viewed, newest first)
 const (
 	kbFavoritesKeyPrefix = "glpi_kb_fav_"
-	kbRecentKeyPrefix     = "glpi_kb_recent_"
-	kbPersonalLimit       = 20
+	kbRecentKeyPrefix    = "glpi_kb_recent_"
+	kbPersonalLimit      = 20
 )
 
 type kbItem struct {
@@ -94,8 +95,8 @@ func (p *Plugin) apiKnowledgeFavorites(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	uid, err := p.apiAuth(r)
-	if err != nil {
+	uid := currentUserID(r)
+	if uid == "" {
 		writeError(w, http.StatusUnauthorized, "authentication required")
 		return
 	}
@@ -109,8 +110,8 @@ func (p *Plugin) apiKnowledgeRecent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	uid, err := p.apiAuth(r)
-	if err != nil {
+	uid := currentUserID(r)
+	if uid == "" {
 		writeError(w, http.StatusUnauthorized, "authentication required")
 		return
 	}
@@ -125,8 +126,8 @@ func (p *Plugin) apiKnowledgeSetFavorite(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	uid, err := p.apiAuth(r)
-	if err != nil {
+	uid := currentUserID(r)
+	if uid == "" {
 		writeError(w, http.StatusUnauthorized, "authentication required")
 		return
 	}
