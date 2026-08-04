@@ -27,6 +27,8 @@ export interface CreateTicketRequest {
   urgency: number;
   category_id: number;
   type?: number;
+  asset_id?: number;
+  asset_type?: string;
 }
 
 export interface CreateTicketResponse {

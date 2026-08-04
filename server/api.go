@@ -382,6 +382,8 @@ func (p *Plugin) apiCreateTicket(w http.ResponseWriter, r *http.Request) {
 		Urgency    int    `json:"urgency"`
 		CategoryID int    `json:"category_id"`
 		Type       int    `json:"type"`
+		AssetID    int    `json:"asset_id"`
+		AssetType  string `json:"asset_type"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -419,6 +421,8 @@ func (p *Plugin) apiCreateTicket(w http.ResponseWriter, r *http.Request) {
 		EntityID:      entityID,
 		CreatorUserID: uid,
 		RequestID:     fmt.Sprintf("api-%d", time.Now().UnixNano()),
+		AssetID:       req.AssetID,
+		AssetType:     req.AssetType,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "ticket creation failed: "+err.Error())

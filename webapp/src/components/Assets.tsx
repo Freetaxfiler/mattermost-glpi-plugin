@@ -37,6 +37,34 @@ export default function Assets() {
   const [detailError, setDetailError] = useState<string | null>(null);
   const [glpiUrl, setGlpiUrl] = useState('');
 
+  // Create-ticket-from-asset state
+  const [creating, setCreating] = useState(false);
+  const [createdTicketId, setCreatedTicketId] = useState<number | null>(null);
+  const [ticketNote, setTicketNote] = useState('');
+
+  const createTicketFromAsset = async () => {
+    if (!detail) return;
+    setCreating(true);
+    setDetailError(null);
+    try {
+      const result = await api.createTicket({
+        subject: `Issue with ${detail.name || `${detail.itemtype} #${detail.id}`}`,
+        content: (ticketNote || `Reported from asset ${detail.name || detail.itemtype} (#${detail.id}).`).trim(),
+        priority: 3,
+        urgency: 3,
+        category_id: 0,
+        asset_id: detail.id,
+        asset_type: detail.itemtype,
+      });
+      setCreatedTicketId(result.id);
+      setTicketNote('');
+    } catch (err: unknown) {
+      setDetailError(err instanceof Error ? err.message : 'Failed to create ticket');
+    } finally {
+      setCreating(false);
+    }
+  };
+
   useEffect(() => {
     api.getConfig().then((c) => setGlpiUrl(c.glpi_url || '')).catch(() => {});
   }, []);
@@ -152,6 +180,33 @@ export default function Assets() {
               </>
             )}
           </div>
+
+          {/* Create ticket from asset */}
+          <div className="glpi-card glpi-mt-10">
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Report an issue with this asset</div>
+            <textarea
+              className="glpi-textarea"
+              value={ticketNote}
+              onChange={(e) => setTicketNote(e.target.value)}
+              placeholder="Describe the issue (optional)"
+              rows={2}
+            />
+            <div className="glpi-flex glpi-gap-8 glpi-mt-10">
+              <button
+                className="glpi-btn glpi-btn-primary glpi-btn-sm"
+                onClick={createTicketFromAsset}
+                disabled={creating}
+              >
+                {creating ? 'Creating…' : 'Create Ticket'}
+              </button>
+              {createdTicketId && (
+                <span className="glpi-text-small" style={{ color: 'var(--online-indicator)' }}>
+                  ✅ Ticket #{createdTicketId} created
+                </span>
+              )}
+            </div>
+          </div>
+
           <div className="glpi-flex glpi-gap-8 glpi-mt-10">
             <button className="glpi-btn glpi-btn-secondary glpi-btn-sm" onClick={() => { setDetail(null); setDetailError(null); }}>
               ← Back to list

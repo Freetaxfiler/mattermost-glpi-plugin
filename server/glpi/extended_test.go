@@ -2,6 +2,8 @@ package glpi
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -182,5 +184,42 @@ func TestListTicketDocumentsListsDocuments(t *testing.T) {
 	}
 	if docs[1].Size != 5678 {
 		t.Fatalf("unexpected document size: %+v", docs[1])
+	}
+}
+
+func TestCreateTicketIncludesAssetLinkage(t *testing.T) {
+	var received map[string]interface{}
+	client := newTestClient(t, sessionHandler(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/apirest.php/Ticket" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewDecoder(r.Body).Decode(&received)
+		_, _ = w.Write([]byte(`{"id":55}`))
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := client.CreateTicket(ctx, CreateTicketRequest{
+		Name:      "Monitor flickers",
+		Content:   "Screen flickering every 5 minutes",
+		AssetID:   42,
+		AssetType: "Monitor",
+	})
+	if err != nil || result.ID != 55 {
+		t.Fatalf("CreateTicket: id=%d err=%v", result.ID, err)
+	}
+
+	input, ok := received["input"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected input map in request body, got %v", received)
+	}
+
+	if got := fmt.Sprintf("%v", input["_items_id"]); got != "42" {
+		t.Fatalf("expected _items_id=42, got %v", got)
+	}
+	if got := fmt.Sprintf("%v", input["_itemtype"]); got != "Monitor" {
+		t.Fatalf("expected _itemtype=Monitor, got %v", got)
 	}
 }

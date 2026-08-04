@@ -27,6 +27,8 @@ type TicketInput struct {
 	ChannelID     string // for follow-up notifications
 	RequestID     string // for idempotency/correlation
 	TeamID        string // optional Mattermost team for attribution
+	AssetID       int    // optional linked GLPI asset (Create Ticket from Asset)
+	AssetType     string // optional GLPI item type for the linked asset
 }
 
 // CreateTicketResult contains the result of ticket creation.
@@ -91,6 +93,8 @@ func (s *TicketService) CreateTicket(ctx context.Context, input TicketInput) (*C
 		ITILCategoryID: categoryID,
 		EntityID:       entityID,
 		RequesterID:    requesterID,
+		AssetID:        input.AssetID,
+		AssetType:      input.AssetType,
 	}
 
 	// Call GLPI
@@ -135,6 +139,8 @@ type InputBuilder struct {
 	ChannelID     string
 	RequestID     string
 	TeamID        string
+	AssetID       int
+	AssetType     string
 }
 
 func (b *InputBuilder) Build() TicketInput {
@@ -152,6 +158,8 @@ func (b *InputBuilder) Build() TicketInput {
 		ChannelID:     b.ChannelID,
 		RequestID:     b.RequestID,
 		TeamID:        b.TeamID,
+		AssetID:       b.AssetID,
+		AssetType:     b.AssetType,
 	}
 }
 

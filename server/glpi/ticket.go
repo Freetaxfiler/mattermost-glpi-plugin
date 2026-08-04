@@ -69,6 +69,10 @@ type CreateTicketRequest struct {
 	ITILCategoryID int
 	EntityID       int
 	RequesterID    int
+	// AssetID + AssetType link the ticket to a GLPI asset via the standard
+	// "associated element" fields (_items_id / _itemtype).
+	AssetID   int
+	AssetType string
 }
 
 // CreateTicketResponse represents the response returned by GLPI.
@@ -116,6 +120,13 @@ func (c *Client) CreateTicket(ctx context.Context, req CreateTicketRequest) (*Cr
 	}
 	if req.RequesterID > 0 {
 		input["_users_id_requester"] = req.RequesterID
+	}
+	if req.AssetID > 0 && strings.TrimSpace(req.AssetType) != "" {
+		// Link the ticket to the associated GLPI asset. GLPI accepts the
+		// itemtype either with or without the "Asset" suffix normalization;
+		// use the type as provided by the caller.
+		input["_items_id"] = req.AssetID
+		input["_itemtype"] = strings.TrimSpace(req.AssetType)
 	}
 
 	var result CreateTicketResponse
