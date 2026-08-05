@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,17 +15,49 @@ type NotificationService struct {
 	p *Plugin
 }
 
+// formatWebhookMessage renders a GLPI webhook event as a Mattermost markdown
+// message for channel posts and DMs.
+func formatWebhookMessage(event handlers.WebhookEvent) string {
+	var b strings.Builder
+	b.WriteString("🔔 **GLPI** — ")
+	b.WriteString(event.Event)
+
+	if event.TicketID > 0 {
+		b.WriteString(fmt.Sprintf("\nTicket #%d", event.TicketID))
+	}
+	if event.Title != "" {
+		b.WriteString(": " + event.Title)
+	}
+	if event.Status != "" {
+		b.WriteString("\nStatus: " + event.Status)
+	}
+	if event.URL != "" {
+		b.WriteString("\n" + event.URL)
+	}
+	return b.String()
+}
+
 func NewNotificationService(p *Plugin) *NotificationService {
 	return &NotificationService{p: p}
 }
 
-// NotifyTicketCreated centralizes all ticket-creation notifications.
-// It records the event in the persistent store, pushes a websocket event,
-// posts to the configured channel, and DMs the requester if matched.
+// NotifyTicketCreated records the event in the persistent store and pushes a
+// websocket event for live UI refresh.  The caller must separately invoke
+// NotifyAdminsTicketCreated when it has full ticket details available (the
+// service does not carry them).
 func (s *NotificationService) NotifyTicketCreated(ticketID int, subject string) {
-	s.p.recordTicketCreatedNotification(ticketID, subject)
+	s.p.recordNotification(Notification{
+		ID:        fmt.Sprintf("n-%d-%d", time.Now().UnixNano(), ticketID),
+		Type:      "ticket_created",
+		TicketID:  ticketID,
+		Title:     subject,
+		Status:    "New",
+		CreatedAt: time.Now().Unix(),
+	})
 
-	// Emit websocket event for live UI refresh
+	// Push a WebSocket event so open sidebars refresh their badge/views in
+	// near real time. The Mattermost server prefixes plugin events with
+	// custom_<pluginId>_; the webapp subscribes to that prefixed name.
 	s.publishTicketEvent("ticket_created", map[string]any{
 		"ticket_id": ticketID,
 		"subject":   subject,
@@ -161,38 +194,19 @@ func (s *NotificationService) NotifyWebhookEvent(event handlers.WebhookEvent) {
 		"url":       event.URL,
 	})
 
-	// Route to appropriate Mattermost destinations
 	message := formatWebhookMessage(event)
 	config := s.p.currentConfiguration()
 
 	posted := false
-	if config != nil && strings.TrimSpace(config.NotificationChannelID) != "" && s.p.botUserID != "" {
-		post := &model.Post{
-			UserId:    s.p.botUserID,
-			ChannelId: strings.TrimSpace(config.NotificationChannelID),
-			Message:   message,
-		}
-		if _, appErr := s.p.API.CreatePost(post); appErr != nil {
-			s.p.API.LogWarn("failed to post GLPI notification to channel", "err", appErr.Error())
-		} else {
+	if config != nil && strings.TrimSpace(config.NotificationChannelID) != "" {
+		if ok := s.postToChannel(strings.TrimSpace(config.NotificationChannelID), message); ok {
 			posted = true
 		}
 	}
 
-	if event.RequesterEmail != "" && s.p.botUserID != "" {
-		if user, appErr := s.p.API.GetUserByEmail(event.RequesterEmail); appErr == nil && user != nil {
-			if channel, appErr := s.p.API.GetDirectChannel(s.p.botUserID, user.Id); appErr == nil && channel != nil {
-				post := &model.Post{
-					UserId:    s.p.botUserID,
-					ChannelId: channel.Id,
-					Message:   message,
-				}
-				if _, appErr := s.p.API.CreatePost(post); appErr != nil {
-					s.p.API.LogWarn("failed to DM GLPI notification", "err", appErr.Error())
-				} else {
-					posted = true
-				}
-			}
+	if event.RequesterEmail != "" {
+		if ok := s.dmRequester(event.RequesterEmail, message); ok {
+			posted = true
 		}
 	}
 
@@ -201,8 +215,103 @@ func (s *NotificationService) NotifyWebhookEvent(event handlers.WebhookEvent) {
 	}
 }
 
-// recordOwnership is a thin wrapper kept for backwards compatibility
-// (called from retry queue and legacy paths).
-func (s *NotificationService) recordOwnership(userID string, ticketID int) {
-	s.p.recordOwnership(userID, ticketID)
+// postToChannel posts a message from the GLPI bot to a channel. It returns
+// true when the post was created successfully.
+func (s *NotificationService) postToChannel(channelID, message string) bool {
+	if s.p.botUserID == "" || strings.TrimSpace(channelID) == "" {
+		return false
+	}
+	post := &model.Post{
+		UserId:    s.p.botUserID,
+		ChannelId: strings.TrimSpace(channelID),
+		Message:   message,
+	}
+	if _, appErr := s.p.API.CreatePost(post); appErr != nil {
+		s.p.API.LogWarn("failed to post GLPI notification to channel", "err", appErr.Error())
+		return false
+	}
+	return true
+}
+
+// dmRequester DMs the GLPI bot's notification to the Mattermost user matching
+// the requester email, if one exists. It returns true when delivered.
+func (s *NotificationService) dmRequester(email, message string) bool {
+	if s.p.botUserID == "" || strings.TrimSpace(email) == "" {
+		return false
+	}
+	user, appErr := s.p.API.GetUserByEmail(strings.TrimSpace(email))
+	if appErr != nil || user == nil {
+		return false
+	}
+	channel, appErr := s.p.API.GetDirectChannel(s.p.botUserID, user.Id)
+	if appErr != nil || channel == nil {
+		return false
+	}
+	post := &model.Post{
+		UserId:    s.p.botUserID,
+		ChannelId: channel.Id,
+		Message:   message,
+	}
+	if _, appErr := s.p.API.CreatePost(post); appErr != nil {
+		s.p.API.LogWarn("failed to DM GLPI notification", "err", appErr.Error())
+		return false
+	}
+	return true
+}
+
+// TicketCreatedDetails carries the additional context needed to notify the
+// IT admin channel and the requester about a newly-created ticket.
+type TicketCreatedDetails struct {
+	TicketID    int
+	Subject     string
+	CreatorName string
+	CreatorID   string
+	Priority    string
+	Category    string
+	Status      string
+	GLPIURL     string
+}
+
+// NotifyAdminsTicketCreated posts a new-ticket notification to the configured
+// IT admin channel (NotificationChannelID) and DMs the requester, so support
+// staff are alerted as soon as an employee files a ticket.
+func (s *NotificationService) NotifyAdminsTicketCreated(details TicketCreatedDetails) {
+	config := s.p.currentConfiguration()
+	if config == nil {
+		return
+	}
+
+	var b strings.Builder
+	b.WriteString("🎫 **New ticket #" + strconv.Itoa(details.TicketID) + "**\n")
+	if details.Subject != "" {
+		b.WriteString("**" + details.Subject + "**\n")
+	}
+	if details.CreatorName != "" {
+		b.WriteString("Employee: " + details.CreatorName + "\n")
+	}
+	if details.Priority != "" {
+		b.WriteString("Priority: " + details.Priority + "\n")
+	}
+	if details.Category != "" {
+		b.WriteString("Category: " + details.Category + "\n")
+	}
+	if details.Status != "" {
+		b.WriteString("Status: " + details.Status + "\n")
+	}
+	if details.GLPIURL != "" {
+		b.WriteString(details.GLPIURL)
+	}
+	message := b.String()
+
+	// Admin channel (best-effort; failures are logged, not fatal)
+	if config.NotificationChannelID != "" {
+		s.postToChannel(config.NotificationChannelID, message)
+	}
+
+	// DM the requester with the same summary (resolve email via MM identity)
+	if details.CreatorID != "" {
+		if user, appErr := s.p.API.GetUser(details.CreatorID); appErr == nil && user != nil && user.Email != "" {
+			s.dmRequester(user.Email, message)
+		}
+	}
 }

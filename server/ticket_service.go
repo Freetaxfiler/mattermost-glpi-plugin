@@ -116,12 +116,42 @@ func (s *TicketService) CreateTicket(ctx context.Context, input TicketInput) (*C
 	// Record notification for webapp notification center + websocket push
 	s.p.recordTicketCreatedNotification(result.ID, strings.TrimSpace(input.Subject))
 
+	// Notify the IT admin channel and the requester about the new ticket.
+	if svc := s.p.currentNotification(); svc != nil {
+		creatorName := ""
+		if input.CreatorUserID != "" {
+			if user, appErr := s.p.API.GetUser(input.CreatorUserID); appErr == nil && user != nil {
+				creatorName = strings.TrimSpace(user.FirstName + " " + user.LastName)
+				if creatorName == "" {
+					creatorName = user.Username
+				}
+			}
+		}
+		svc.NotifyAdminsTicketCreated(TicketCreatedDetails{
+			TicketID:    result.ID,
+			Subject:     strings.TrimSpace(input.Subject),
+			CreatorName: creatorName,
+			CreatorID:   input.CreatorUserID,
+			Priority:    glpi.PriorityLabel(input.Priority),
+			Status:      glpi.StatusLabel(1),
+			GLPIURL:     ticketURLFromConfig(s.p, result.ID),
+		})
+	}
+
 	// Build result
 	integrationMode := requesterID == 0
 	return &CreateTicketResult{
 		Ticket:          result,
 		IntegrationMode: integrationMode,
 	}, nil
+}
+
+// ticketURLFromConfig builds the GLPI ticket URL from configuration.
+func ticketURLFromConfig(p *Plugin, ticketID int) string {
+	if config := p.currentConfiguration(); config != nil && strings.TrimSpace(config.GLPIURL) != "" {
+		return strings.TrimRight(config.GLPIURL, "/") + "/front/ticket.form.php?id=" + strconv.Itoa(ticketID)
+	}
+	return ""
 }
 
 // InputBuilder helps construct TicketInput from various entry points.

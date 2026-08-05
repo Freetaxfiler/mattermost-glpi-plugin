@@ -227,14 +227,9 @@ func (p *Plugin) handleDialogSubmission(ctx context.Context, req *model.SubmitDi
 		}
 	}
 
-	// Resolve the requester through the centralized identity service. Ticket
-	// creation never aborts when the user has no individual GLPI account.
-	requester, mm := p.resolveRequesterFor(req.UserId, req.TeamId, req.ChannelId)
-	requesterID := requester.GLPIUserID
-	if requester.GLPIUserID == 0 && mm != nil {
-		// Integration account is the requester; preserve the Mattermost identity.
-		description += mm.MetadataHTML()
-	}
+	// TicketService.CreateTicket is the single source of truth for requester
+	// resolution, Mattermost metadata, default entity/category, and ownership.
+	// Do not pre-resolve or pre-append metadata here.
 
 	// preserve any request_id value from the incoming HTTP context when creating a ticket
 	reqID, _ := ctx.Value("request_id").(string)
@@ -255,7 +250,6 @@ func (p *Plugin) handleDialogSubmission(ctx context.Context, req *model.SubmitDi
 		Urgency:       urgency,
 		CategoryID:    categoryID,
 		EntityID:      entityID,
-		RequesterID:   requesterID,
 		CreatorUserID: req.UserId,
 		ChannelID:     req.ChannelId,
 		RequestID:     reqID,
@@ -271,7 +265,6 @@ func (p *Plugin) handleDialogSubmission(ctx context.Context, req *model.SubmitDi
 				Type:           typeID,
 				ITILCategoryID: categoryID,
 				EntityID:       entityID,
-				RequesterID:    requesterID,
 			},
 			RequesterMattermost: req.UserId,
 			ChannelID:           req.ChannelId,
@@ -308,78 +301,22 @@ func (p *Plugin) handleDialogSubmission(ctx context.Context, req *model.SubmitDi
 	}
 	p.API.SendEphemeralPost(req.UserId, post)
 
-	p.recordOwnership(req.UserId, result.Ticket.ID)
-	p.recordTicketCreatedNotification(result.Ticket.ID, subject)
+	// TicketService.CreateTicket already recorded ownership and the
+	// ticket-created notification + websocket event. Do not repeat them here.
 	p.API.LogInfo("Ticket created from dialog", "id", result.Ticket.ID, "user_id", req.UserId, "request_id", reqID)
 	return nil, nil
 }
 
 // notifyWebhookEvent posts a GLPI notification into Mattermost.
+// Delegates all routing (channel post, DM, websocket, persistence) to
+// NotificationService — the single source of truth for notification logic.
 func (p *Plugin) notifyWebhookEvent(event handlers.WebhookEvent) {
 	if svc := p.currentNotification(); svc != nil {
 		svc.NotifyWebhookEvent(event)
-	} else {
-		// Legacy fallback
-		p.recordNotification(notificationFromWebhookEvent(event))
-
-		message := formatWebhookMessage(event)
-
-		config := p.currentConfiguration()
-
-		posted := false
-		if config != nil && strings.TrimSpace(config.NotificationChannelID) != "" && p.botUserID != "" {
-			post := &model.Post{
-				UserId:    p.botUserID,
-				ChannelId: strings.TrimSpace(config.NotificationChannelID),
-				Message:   message,
-			}
-			if _, appErr := p.API.CreatePost(post); appErr != nil {
-				p.API.LogWarn("failed to post GLPI notification to channel", "err", appErr.Error())
-			}
-			posted = true
-		}
-
-		if event.RequesterEmail != "" && p.botUserID != "" {
-			if user, appErr := p.API.GetUserByEmail(event.RequesterEmail); appErr == nil && user != nil {
-				if channel, appErr := p.API.GetDirectChannel(p.botUserID, user.Id); appErr == nil && channel != nil {
-					post := &model.Post{
-						UserId:    p.botUserID,
-						ChannelId: channel.Id,
-						Message:   message,
-					}
-					if _, appErr := p.API.CreatePost(post); appErr != nil {
-						p.API.LogWarn("failed to DM GLPI notification", "err", appErr.Error())
-					} else {
-						posted = true
-					}
-				}
-			}
-		}
-
-		if !posted {
-			p.API.LogInfo("GLPI webhook received but no notification target was available", "event", event.Event, "ticket_id", event.TicketID)
-		}
+		return
 	}
-}
-
-func formatWebhookMessage(event handlers.WebhookEvent) string {
-	var b strings.Builder
-	b.WriteString("🔔 **GLPI** — ")
-	b.WriteString(event.Event)
-
-	if event.TicketID > 0 {
-		b.WriteString(fmt.Sprintf("\nTicket #%d", event.TicketID))
-	}
-	if event.Title != "" {
-		b.WriteString(": " + event.Title)
-	}
-	if event.Status != "" {
-		b.WriteString("\nStatus: " + event.Status)
-	}
-	if event.URL != "" {
-		b.WriteString("\n" + event.URL)
-	}
-	return b.String()
+	p.API.LogWarn("webhook received but notification service is not initialized; dropping event",
+		"event", event.Event, "ticket_id", event.TicketID)
 }
 
 // kvStore defines the subset of the Mattermost KV store operations needed for

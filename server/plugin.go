@@ -29,6 +29,7 @@ type Plugin struct {
 	configuration     *Configuration
 	glpiClient        glpi.GLPIClient
 	identitySvc       *identity.Service
+	ownershipSvc      *OwnershipService
 	notificationSvc   *NotificationService
 	botUserID         string
 	// retry queue for durable retry of non-idempotent operations
@@ -69,7 +70,8 @@ func (p *Plugin) OnActivate() error {
 	}
 	p.initializeIdentity()
 
-	// Initialize notification service
+	// Initialize services that depend on the identity layer
+	p.ownershipSvc = NewOwnershipService(p)
 	p.notificationSvc = NewNotificationService(p)
 
 	// initialize and start retry queue
@@ -191,6 +193,13 @@ func (p *Plugin) currentNotification() *NotificationService {
 	p.configurationLock.RLock()
 	defer p.configurationLock.RUnlock()
 	return p.notificationSvc
+}
+
+// currentOwnership returns the ownership service, or nil before it is initialized.
+func (p *Plugin) currentOwnership() *OwnershipService {
+	p.configurationLock.RLock()
+	defer p.configurationLock.RUnlock()
+	return p.ownershipSvc
 }
 
 // loadMMUser builds the Mattermost identity for a user, resolving team and

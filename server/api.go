@@ -26,6 +26,24 @@ func currentUserID(r *http.Request) string {
 	return ""
 }
 
+// glpiClientOrError returns the GLPI client or writes a 503 JSON error and
+// returns nil, so callers can write: client := glpiClientOrError(w); if client == nil { return }
+func glpiClientOrError(p *Plugin, w http.ResponseWriter) glpi.GLPIClient {
+	client := p.GetGLPIClient()
+	if client == nil {
+		writeError(w, http.StatusServiceUnavailable, "glpi client not initialized")
+		return nil
+	}
+	return client
+}
+
+// requestCtx returns a context derived from the request with the standard
+// timeout. All GLPI API handlers use this pattern; the helper avoids 18
+// identical lines of boilerplate per handler.
+func requestCtx(r *http.Request) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(r.Context(), 15*time.Second)
+}
+
 // apiResponse is the standard envelope for all API JSON responses.
 type apiResponse struct {
 	Status string      `json:"status"`
@@ -344,10 +362,35 @@ func (p *Plugin) apiListTickets(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	default:
+		// Scope the default search to the caller's effective ownership:
+		// admins and technicians search everything; employees only their own.
+		glpiUserID, _ := p.GetGLPIUserID(uid)
+		role := identity.RoleEmployee
+		if own := p.currentOwnership(); own != nil {
+			role, _ = own.ResolveRole(uid)
+		}
+		switch {
+		case role == identity.RoleAdministrator || role == identity.RoleTechnician:
+			// match all
+		case glpiUserID > 0:
+			glpiFilter.RequesterID = glpiUserID
+		default:
+			// Employee Mode A: fall back to the KV ownership store.
+			svc := p.currentIdentity()
+			if svc == nil {
+				writeError(w, http.StatusServiceUnavailable, "identity service not initialized")
+				return
+			}
+			tickets, total, err := svc.ListOwnedTickets(ctx, uid, page, limit, client.GetTicket)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "ticket lookup failed: "+err.Error())
+				return
+			}
+			writeOK(w, map[string]interface{}{"tickets": tickets, "total": total, "count": len(tickets)})
+			return
+		}
 		if search != "" {
 			glpiFilter.TitleQuery = search
-		} else {
-			glpiFilter.RequesterID = -1 // match all
 		}
 	}
 
@@ -429,18 +472,30 @@ func (p *Plugin) apiCreateTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p.recordTicketCreatedNotification(result.Ticket.ID, strings.TrimSpace(req.Subject))
+	// TicketService.CreateTicket already records ownership and the
+	// ticket-created notification + websocket event. Do not repeat them here.
 	writeOK(w, result.Ticket)
 }
 
 func (p *Plugin) apiGetTicket(w http.ResponseWriter, r *http.Request, ticketID int) {
-	client := p.GetGLPIClient()
-	if client == nil {
-		writeError(w, http.StatusServiceUnavailable, "glpi client not initialized")
+	uid := currentUserID(r)
+	if uid == "" {
+		writeError(w, http.StatusUnauthorized, "authentication required")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	// Ownership check: employees can only view their own tickets.
+	if own := p.currentOwnership(); own != nil && !own.CanViewTicket(uid, ticketID) {
+		writeError(w, http.StatusForbidden, "access denied: ticket is not in your scope")
+		return
+	}
+
+	client := glpiClientOrError(p, w)
+	if client == nil {
+		return
+	}
+
+	ctx, cancel := requestCtx(r)
 	defer cancel()
 
 	ticket, err := client.GetTicket(ctx, ticketID)
@@ -453,9 +508,19 @@ func (p *Plugin) apiGetTicket(w http.ResponseWriter, r *http.Request, ticketID i
 }
 
 func (p *Plugin) apiUpdateTicket(w http.ResponseWriter, r *http.Request, ticketID int) {
-	client := p.GetGLPIClient()
+	uid := currentUserID(r)
+	if uid == "" {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	if own := p.currentOwnership(); own != nil && !own.CanEditTicket(uid) {
+		writeError(w, http.StatusForbidden, "permission denied: only technicians and admins can edit tickets")
+		return
+	}
+
+	client := glpiClientOrError(p, w)
 	if client == nil {
-		writeError(w, http.StatusServiceUnavailable, "glpi client not initialized")
 		return
 	}
 
@@ -465,7 +530,7 @@ func (p *Plugin) apiUpdateTicket(w http.ResponseWriter, r *http.Request, ticketI
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	ctx, cancel := requestCtx(r)
 	defer cancel()
 
 	if err := client.UpdateTicket(ctx, ticketID, input); err != nil {
@@ -482,13 +547,23 @@ func (p *Plugin) apiUpdateTicket(w http.ResponseWriter, r *http.Request, ticketI
 }
 
 func (p *Plugin) apiDeleteTicket(w http.ResponseWriter, r *http.Request, ticketID int) {
-	client := p.GetGLPIClient()
-	if client == nil {
-		writeError(w, http.StatusServiceUnavailable, "glpi client not initialized")
+	uid := currentUserID(r)
+	if uid == "" {
+		writeError(w, http.StatusUnauthorized, "authentication required")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	if own := p.currentOwnership(); own != nil && !own.CanEditTicket(uid) {
+		writeError(w, http.StatusForbidden, "permission denied: only technicians and admins can delete tickets")
+		return
+	}
+
+	client := glpiClientOrError(p, w)
+	if client == nil {
+		return
+	}
+
+	ctx, cancel := requestCtx(r)
 	defer cancel()
 
 	if err := client.DeleteTicket(ctx, ticketID); err != nil {
@@ -518,13 +593,21 @@ func (p *Plugin) apiAddFollowup(w http.ResponseWriter, r *http.Request, ticketID
 		return
 	}
 
-	client := p.GetGLPIClient()
+	// Private (internal) notes are restricted to technicians and admins.
+	if req.IsPrivate {
+		uid := currentUserID(r)
+		if own := p.currentOwnership(); own != nil && !own.CanAddPrivateNote(uid) {
+			writeError(w, http.StatusForbidden, "permission denied: only technicians and admins can post private notes")
+			return
+		}
+	}
+
+	client := glpiClientOrError(p, w)
 	if client == nil {
-		writeError(w, http.StatusServiceUnavailable, "glpi client not initialized")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	ctx, cancel := requestCtx(r)
 	defer cancel()
 
 	if err := client.AddFollowup(ctx, ticketID, req.Content, req.IsPrivate); err != nil {
@@ -553,13 +636,19 @@ func (p *Plugin) apiAddSolution(w http.ResponseWriter, r *http.Request, ticketID
 		return
 	}
 
-	client := p.GetGLPIClient()
-	if client == nil {
-		writeError(w, http.StatusServiceUnavailable, "glpi client not initialized")
+	// Solutions are restricted to technicians and admins.
+	uid := currentUserID(r)
+	if own := p.currentOwnership(); own != nil && !own.CanCloseTicket(uid) {
+		writeError(w, http.StatusForbidden, "permission denied: only technicians and admins can add solutions")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	client := glpiClientOrError(p, w)
+	if client == nil {
+		return
+	}
+
+	ctx, cancel := requestCtx(r)
 	defer cancel()
 
 	if err := client.AddSolution(ctx, ticketID, req.Content); err != nil {
@@ -575,9 +664,8 @@ func (p *Plugin) apiAddSolution(w http.ResponseWriter, r *http.Request, ticketID
 }
 
 func (p *Plugin) apiGetTimeline(w http.ResponseWriter, r *http.Request, ticketID int) {
-	client := p.GetGLPIClient()
+	client := glpiClientOrError(p, w)
 	if client == nil {
-		writeError(w, http.StatusServiceUnavailable, "glpi client not initialized")
 		return
 	}
 
@@ -591,7 +679,7 @@ func (p *Plugin) apiGetTimeline(w http.ResponseWriter, r *http.Request, ticketID
 		perPage = pp
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	ctx, cancel := requestCtx(r)
 	defer cancel()
 
 	timeline, err := client.GetTicketTimeline(ctx, ticketID, glpi.TimelinePageRequest{Page: page, PerPage: perPage})
@@ -647,9 +735,8 @@ func (p *Plugin) apiAttachFile(w http.ResponseWriter, r *http.Request, ticketID 
 		return
 	}
 
-	client := p.GetGLPIClient()
+	client := glpiClientOrError(p, w)
 	if client == nil {
-		writeError(w, http.StatusServiceUnavailable, "glpi client not initialized")
 		return
 	}
 
@@ -954,18 +1041,28 @@ func (p *Plugin) apiDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	glpiUserID, err := p.GetGLPIUserID(uid)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "could not resolve glpi user")
-		return
-	}
+	glpiUserID, _ := p.GetGLPIUserID(uid)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
-	if glpiUserID <= 0 {
-		// No individual GLPI account (integration mode): derive the stats from
-		// the identity-service ownership mapping.
+	// Role-aware dashboard scope (single source of truth: OwnershipService).
+	role := identity.RoleEmployee
+	if own := p.currentOwnership(); own != nil {
+		role, _ = own.ResolveRole(uid)
+	}
+
+	// baseFilter is the ownership scope applied to every stat query.
+	// Admin: none (all tickets). Technician: assigned. Employee Mode B:
+	// requester. Employee Mode A: ownership-store fallback below.
+	baseFilter := glpi.TicketFilter{Limit: 1}
+	switch {
+	case role == identity.RoleAdministrator || role == identity.RoleTechnician:
+		// no ownership restriction for admins; technicians get assigned below
+	case glpiUserID > 0:
+		baseFilter.RequesterID = glpiUserID
+	default:
+		// Employee Mode A: derive the stats from the KV ownership store.
 		svc := p.currentIdentity()
 		if svc == nil {
 			writeError(w, http.StatusServiceUnavailable, "identity service not initialized")
@@ -981,6 +1078,11 @@ func (p *Plugin) apiDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	countFor := func(filter glpi.TicketFilter) int {
+		// Merge the role scope onto the per-stat filter, unless the stat
+		// already carries an assignee scope (technician "assigned").
+		if filter.AssigneeID == 0 {
+			filter.RequesterID = baseFilter.RequesterID
+		}
 		_, total, err := client.SearchTickets(ctx, filter)
 		if err != nil {
 			return -1
@@ -988,16 +1090,39 @@ func (p *Plugin) apiDashboard(w http.ResponseWriter, r *http.Request) {
 		return total
 	}
 
-	openCount := countFor(glpi.TicketFilter{RequesterID: glpiUserID, StatusBelow: glpi.StatusSolved, Limit: 1})
-	assignedCount := countFor(glpi.TicketFilter{AssigneeID: glpiUserID, StatusBelow: glpi.StatusSolved, Limit: 1})
-	resolvedCount := countFor(glpi.TicketFilter{RequesterID: glpiUserID, Status: glpi.StatusSolved, Limit: 1})
-	pendingCount := countFor(glpi.TicketFilter{RequesterID: glpiUserID, Status: glpi.StatusPending, Limit: 1})
-	closedCount := countFor(glpi.TicketFilter{RequesterID: glpiUserID, Status: glpi.StatusClosed, Limit: 1})
-	criticalCount := countFor(glpi.TicketFilter{RequesterID: glpiUserID, PriorityAtLeast: 5, Limit: 1})
-	today := time.Now().Format("2006-01-02")
-	overdueCount := countFor(glpi.TicketFilter{RequesterID: glpiUserID, StatusBelow: glpi.StatusSolved, DueDateBefore: today, Limit: 1})
+	openCount := countFor(glpi.TicketFilter{StatusBelow: glpi.StatusSolved})
+	if role == identity.RoleTechnician && glpiUserID > 0 {
+		// Technician dashboard: only assigned tickets.
+		openCount = countFor(glpi.TicketFilter{AssigneeID: glpiUserID, StatusBelow: glpi.StatusSolved})
+		assignedCount := countFor(glpi.TicketFilter{AssigneeID: glpiUserID, StatusBelow: glpi.StatusSolved})
+		recent, _, err := client.SearchTickets(ctx, glpi.TicketFilter{AssigneeID: glpiUserID, Limit: 5})
+		if err != nil {
+			recent = nil
+		}
+		writeOK(w, map[string]interface{}{
+			"open":     openCount,
+			"assigned": assignedCount,
+			"resolved": countFor(glpi.TicketFilter{AssigneeID: glpiUserID, Status: glpi.StatusSolved}),
+			"pending":  countFor(glpi.TicketFilter{AssigneeID: glpiUserID, Status: glpi.StatusPending}),
+			"closed":   countFor(glpi.TicketFilter{AssigneeID: glpiUserID, Status: glpi.StatusClosed}),
+			"critical": countFor(glpi.TicketFilter{AssigneeID: glpiUserID, PriorityAtLeast: 5}),
+			"overdue":  countFor(glpi.TicketFilter{AssigneeID: glpiUserID, StatusBelow: glpi.StatusSolved, DueDateBefore: time.Now().Format("2006-01-02")}),
+			"recent":   recent,
+		})
+		return
+	}
 
-	recent, _, err := client.SearchTickets(ctx, glpi.TicketFilter{RequesterID: glpiUserID, Limit: 5})
+	assignedCount := 0
+	if role == identity.RoleAdministrator {
+		assignedCount = countFor(glpi.TicketFilter{StatusBelow: glpi.StatusSolved})
+	}
+	resolvedCount := countFor(glpi.TicketFilter{Status: glpi.StatusSolved})
+	pendingCount := countFor(glpi.TicketFilter{Status: glpi.StatusPending})
+	closedCount := countFor(glpi.TicketFilter{Status: glpi.StatusClosed})
+	criticalCount := countFor(glpi.TicketFilter{PriorityAtLeast: 5})
+	overdueCount := countFor(glpi.TicketFilter{StatusBelow: glpi.StatusSolved, DueDateBefore: time.Now().Format("2006-01-02")})
+
+	recent, _, err := client.SearchTickets(ctx, baseFilter)
 	if err != nil {
 		recent = nil
 	}
