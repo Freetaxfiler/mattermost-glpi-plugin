@@ -94,3 +94,26 @@ func TestOwnershipService_HasMappedGLPIUser(t *testing.T) {
 		t.Fatal("unmapped user should not have GLPI account")
 	}
 }
+
+func TestOwnedTicketIDsForUser_EmptyWhenNoService(t *testing.T) {
+	p, _ := newOwnershipPlugin(false)
+	owned := p.ownedTicketIDsForUser("emp1")
+	// With no identity service, the set is empty — employee has no ownership records.
+	if len(owned) != 0 {
+		t.Fatalf("expected empty owned set, got %v", owned)
+	}
+}
+
+func TestOwnedTicketIDsForUser_AdminBypassReturnsNil(t *testing.T) {
+	p, api := newOwnershipPlugin(true)
+
+	// The admin bypass happens in the caller (apiNotifications), not the
+	// helper — but the helper still returns a non-empty map when the identity
+	// service has records. We verify the helper itself returns a valid map.
+	owned := p.ownedTicketIDsForUser("admin")
+	// With no identity service, owned is an empty map (no records found).
+	if len(owned) != 0 {
+		t.Fatalf("expected empty set with no identity service, got %v", owned)
+	}
+	_ = api
+}

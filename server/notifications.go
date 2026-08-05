@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Freetaxfiler/mattermost-glpi-plugin/server/handlers"
+	"github.com/Freetaxfiler/mattermost-glpi-plugin/server/identity"
 	"github.com/mattermost/mattermost/server/public/model"
 )
 
@@ -19,13 +20,14 @@ const (
 
 // Notification is a persisted GLPI event shown in the notification center.
 type Notification struct {
-	ID        string `json:"id"`
-	Type      string `json:"type"`
-	TicketID  int    `json:"ticket_id,omitempty"`
-	Title     string `json:"title"`
-	Status    string `json:"status,omitempty"`
-	URL       string `json:"url,omitempty"`
-	CreatedAt int64  `json:"created_at"`
+	ID            string `json:"id"`
+	Type          string `json:"type"`
+	TicketID      int    `json:"ticket_id,omitempty"`
+	Title         string `json:"title"`
+	Status        string `json:"status,omitempty"`
+	URL           string `json:"url,omitempty"`
+	CreatorUserID string `json:"creator_user_id,omitempty"`
+	CreatedAt     int64  `json:"created_at"`
 }
 
 // recordNotification persists a notification (newest first) for the webapp
@@ -72,24 +74,28 @@ func notificationFromWebhookEvent(ev handlers.WebhookEvent) Notification {
 
 // recordTicketCreatedNotification persists a ticket-creation event for the
 // notification center (used by the API/dialog create paths).
-func (p *Plugin) recordTicketCreatedNotification(ticketID int, subject string) {
+func (p *Plugin) recordTicketCreatedNotification(ticketID int, subject, creatorUserID string) {
 	if svc := p.currentNotification(); svc != nil {
-		svc.NotifyTicketCreated(ticketID, subject)
+		svc.NotifyTicketCreated(ticketID, subject, creatorUserID)
 	} else {
-		// Fallback to legacy behavior if notification service not initialized
 		p.recordNotification(Notification{
-			ID:        fmt.Sprintf("n-%d-%d", time.Now().UnixNano(), ticketID),
-			Type:      "ticket_created",
-			TicketID:  ticketID,
-			Title:     subject,
-			Status:    "New",
-			CreatedAt: time.Now().Unix(),
+			ID:            fmt.Sprintf("n-%d-%d", time.Now().UnixNano(), ticketID),
+			Type:          "ticket_created",
+			TicketID:      ticketID,
+			Title:         subject,
+			Status:        "New",
+			CreatorUserID: creatorUserID,
+			CreatedAt:     time.Now().Unix(),
 		})
 	}
 }
 
-// loadNotifications returns stored notifications (newest first).
-func (p *Plugin) loadNotifications() []Notification {
+// loadNotifications returns stored notifications (newest first). When
+// ownedTicketIDs is non-nil, only notifications matching one of the owned
+// tickets or having a CreatorUserID equal to callerID are returned. A nil
+// ownedTicketIDs slice (or callerID of "") returns all notifications
+// (admin/special case).
+func (p *Plugin) loadNotifications(ownedTicketIDs map[int]bool, callerID string) []Notification {
 	raw, _ := p.API.KVGet(notificationStoreKey)
 	if len(raw) == 0 {
 		return nil
@@ -99,7 +105,22 @@ func (p *Plugin) loadNotifications() []Notification {
 		p.API.LogWarn("failed to decode stored notifications", "err", err.Error())
 		return nil
 	}
-	return list
+	// No filter → return all (used by admin/special contexts).
+	if ownedTicketIDs == nil {
+		return list
+	}
+	filtered := make([]Notification, 0, len(list))
+	for _, n := range list {
+		if n.TicketID > 0 && ownedTicketIDs[n.TicketID] {
+			filtered = append(filtered, n)
+			continue
+		}
+		if callerID != "" && n.CreatorUserID == callerID {
+			filtered = append(filtered, n)
+			continue
+		}
+	}
+	return filtered
 }
 
 // notificationReadAt returns the last-read timestamp for a user.
@@ -155,8 +176,29 @@ func (p *Plugin) dismissNotification(userID, id string) {
 
 // ---------- /api/v1/notifications ----------
 
+// ownedTicketIDsForUser builds a set of ticket IDs that the user owns. The
+// set is used to scope notifications, dashboards, and other collection queries
+// to the user's own data.
+func (p *Plugin) ownedTicketIDsForUser(uid string) map[int]bool {
+	if uid == "" {
+		return nil
+	}
+	owned := map[int]bool{}
+	// Identity service ownership store (Mode A fallback).
+	if svc := p.currentIdentity(); svc != nil {
+		for _, id := range svc.ListOwnedTicketIDs(uid) {
+			owned[id] = true
+		}
+	}
+	// If the user has a mapped GLPI account (Mode B), they may have tickets
+	// owned via GLPI search — we cannot enumerate those from the KV store,
+	// but any webhook/API notification that records CreatorUserID will be
+	// matched directly in loadNotifications.
+	return owned
+}
+
 // apiNotifications lists persisted notifications for the authenticated user,
-// applying per-user dismissal and reporting an unread count.
+// applying per-user ownership filtering, per-user dismissal, and unread count.
 func (p *Plugin) apiNotifications(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -166,7 +208,18 @@ func (p *Plugin) apiNotifications(w http.ResponseWriter, r *http.Request) {
 	readAt := p.notificationReadAt(uid)
 	dismissed := p.notificationDismissed(uid)
 
-	all := p.loadNotifications()
+	// Role-based ownership scope: admin sees all; others see own only.
+	var owned map[int]bool
+	if own := p.currentOwnership(); own != nil {
+		role, _ := own.ResolveRole(uid)
+		if role != identity.RoleAdministrator {
+			owned = p.ownedTicketIDsForUser(uid)
+		}
+		// owned=nil for admins → loadNotifications returns all.
+	} else {
+		owned = p.ownedTicketIDsForUser(uid)
+	}
+	all := p.loadNotifications(owned, uid)
 	out := make([]Notification, 0, len(all))
 	unread := 0
 	for _, n := range all {
@@ -193,7 +246,8 @@ func (p *Plugin) apiNotificationRead(w http.ResponseWriter, r *http.Request, id 
 		return
 	}
 	uid := currentUserID(r)
-	for _, n := range p.loadNotifications() {
+	owned := p.ownedTicketIDsForUser(uid)
+	for _, n := range p.loadNotifications(owned, uid) {
 		if n.ID == id {
 			current := p.notificationReadAt(uid)
 			if n.CreatedAt > current {

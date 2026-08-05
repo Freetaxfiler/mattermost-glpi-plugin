@@ -42,17 +42,17 @@ func NewNotificationService(p *Plugin) *NotificationService {
 }
 
 // NotifyTicketCreated records the event in the persistent store and pushes a
-// websocket event for live UI refresh.  The caller must separately invoke
-// NotifyAdminsTicketCreated when it has full ticket details available (the
-// service does not carry them).
-func (s *NotificationService) NotifyTicketCreated(ticketID int, subject string) {
+// websocket event for live UI refresh. The creatorUserID is stored with the
+// notification so that loadNotifications can scope it to the owner.
+func (s *NotificationService) NotifyTicketCreated(ticketID int, subject, creatorUserID string) {
 	s.p.recordNotification(Notification{
-		ID:        fmt.Sprintf("n-%d-%d", time.Now().UnixNano(), ticketID),
-		Type:      "ticket_created",
-		TicketID:  ticketID,
-		Title:     subject,
-		Status:    "New",
-		CreatedAt: time.Now().Unix(),
+		ID:            fmt.Sprintf("n-%d-%d", time.Now().UnixNano(), ticketID),
+		Type:          "ticket_created",
+		TicketID:      ticketID,
+		Title:         subject,
+		Status:        "New",
+		CreatorUserID: creatorUserID,
+		CreatedAt:     time.Now().Unix(),
 	})
 
 	// Push a WebSocket event so open sidebars refresh their badge/views in

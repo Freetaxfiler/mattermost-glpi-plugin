@@ -113,8 +113,10 @@ func (s *TicketService) CreateTicket(ctx context.Context, input TicketInput) (*C
 		s.p.recordOwnership(input.CreatorUserID, result.ID)
 	}
 
-	// Record notification for webapp notification center + websocket push
-	s.p.recordTicketCreatedNotification(result.ID, strings.TrimSpace(input.Subject))
+	// Record notification for webapp notification center + websocket push.
+	// The CreatorUserID scopes the notification to the creator so that
+	// loadNotifications can filter it by ticket ownership.
+	s.p.recordTicketCreatedNotification(result.ID, strings.TrimSpace(input.Subject), input.CreatorUserID)
 
 	// Notify the IT admin channel and the requester about the new ticket.
 	if svc := s.p.currentNotification(); svc != nil {
