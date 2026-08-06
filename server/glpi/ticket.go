@@ -91,6 +91,22 @@ type Ticket struct {
 	Impact   int    `json:"impact"`
 	Date     string `json:"date"`
 	DateMod  string `json:"date_mod"`
+	// Extended fields resolved via expand_dropdowns=true. Each is the
+	// human-readable dropdown name; the numeric id is retained on the *_id
+	// fields when the API returns them.
+	Requester  string `json:"requester,omitempty"`
+	Assignee   string `json:"assignee,omitempty"`
+	Category   string `json:"category,omitempty"`
+	AssetName  string `json:"asset_name,omitempty"`
+	AssetType  string `json:"asset_type,omitempty"`
+	AssetID    int    `json:"asset_id,omitempty"`
+	CategoryID int    `json:"category_id,omitempty"`
+	RequesterID int   `json:"requester_id,omitempty"`
+	AssigneeID int    `json:"assignee_id,omitempty"`
+	// Calculated urgency = (urgency + priority) / 2 for convenience
+	UrgencyCalc int `json:"urgency_calc,omitempty"`
+	// GLPI URL for opening the ticket
+	Link       string `json:"link,omitempty"`
 }
 
 // CreateTicket creates a new ticket in GLPI.
@@ -142,14 +158,58 @@ func (c *Client) CreateTicket(ctx context.Context, req CreateTicketRequest) (*Cr
 	return &result, nil
 }
 
-// GetTicket retrieves a single ticket by ID.
+// GetTicket retrieves a single ticket by ID, expanding dropdown relations
+// (requester, assignee, category, linked asset) to human-readable names.
 func (c *Client) GetTicket(ctx context.Context, id int) (*Ticket, error) {
-	var ticket Ticket
-	err := c.doRequest(ctx, http.MethodGet, "/apirest.php/Ticket/"+strconv.Itoa(id), nil, nil, &ticket)
-	if err != nil {
+	values := url.Values{}
+	values.Set("expand_dropdowns", "true")
+
+	var raw map[string]interface{}
+	if err := c.doRequest(ctx, http.MethodGet, "/apirest.php/Ticket/"+strconv.Itoa(id), values, nil, &raw); err != nil {
 		return nil, err
 	}
-	return &ticket, nil
+
+	ticket := &Ticket{
+		ID:        asInt(raw["id"]),
+		Name:      asString(raw["name"]),
+		Content:   asString(raw["content"]),
+		Status:    asInt(raw["status"]),
+		Priority:  asInt(raw["priority"]),
+		Urgency:   asInt(raw["urgency"]),
+		Impact:    asInt(raw["impact"]),
+		Date:      asString(firstKnown(raw, "date", "date_creation")),
+		DateMod:   asString(raw["date_mod"]),
+		Requester: dropdownName(raw["_users_id_requester"]),
+		Assignee:  dropdownName(raw["_users_id_assign"]),
+		Category:  dropdownName(raw["itilcategories_id"]),
+	}
+	if ticket.Requester == "" {
+		ticket.Requester = dropdownName(raw["users_id_requester"])
+	}
+	if ticket.Assignee == "" {
+		ticket.Assignee = dropdownName(raw["users_id_assign"])
+	}
+	ticket.RequesterID = dropdownID(raw["_users_id_requester"])
+	ticket.AssigneeID = dropdownID(raw["_users_id_assign"])
+	ticket.CategoryID = dropdownID(raw["itilcategories_id"])
+
+	// Calculated urgency = (urgency + priority) / 2 for convenience
+	if ticket.Urgency > 0 && ticket.Priority > 0 {
+		ticket.UrgencyCalc = (ticket.Urgency + ticket.Priority) / 2
+	} else if ticket.Urgency > 0 {
+		ticket.UrgencyCalc = ticket.Urgency
+	} else if ticket.Priority > 0 {
+		ticket.UrgencyCalc = ticket.Priority
+	}
+
+	// Linked asset (associated element): _items_id is the asset id and
+	// _itemtype its GLPI item type.
+	if itemID := dropdownID(raw["_items_id"]); itemID > 0 {
+		ticket.AssetID = itemID
+		ticket.AssetName = dropdownName(raw["_items_id"])
+		ticket.AssetType = asString(raw["_itemtype"])
+	}
+	return ticket, nil
 }
 
 // UpdateTicket applies the given input fields to a ticket.
@@ -183,6 +243,29 @@ func (c *Client) AddFollowup(ctx context.Context, ticketID int, content string, 
 		},
 	}
 	return c.doRequest(ctx, http.MethodPost, "/apirest.php/ITILFollowup", nil, payload, nil)
+}
+
+// UpdateFollowup edits the content/visibility of an existing ITILFollowup.
+// GLPI supports PUT on the ITILFollowup item type.
+func (c *Client) UpdateFollowup(ctx context.Context, followupID int, content string, isPrivate bool) error {
+	private := 0
+	if isPrivate {
+		private = 1
+	}
+	payload := map[string]interface{}{
+		"input": map[string]interface{}{
+			"id":         followupID,
+			"content":    strings.TrimSpace(content),
+			"is_private": private,
+		},
+	}
+	return c.doRequest(ctx, http.MethodPut, "/apirest.php/ITILFollowup/"+strconv.Itoa(followupID), nil, payload, nil)
+}
+
+// DeleteFollowup removes an ITILFollowup. GLPI supports DELETE on the
+// ITILFollowup item type.
+func (c *Client) DeleteFollowup(ctx context.Context, followupID int) error {
+	return c.doRequest(ctx, http.MethodDelete, "/apirest.php/ITILFollowup/"+strconv.Itoa(followupID), nil, nil, nil)
 }
 
 // AddSolution attaches a solution to a ticket (moves it to Solved in GLPI).

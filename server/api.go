@@ -207,6 +207,23 @@ func (p *Plugin) apiTickets(w http.ResponseWriter, r *http.Request, parts []stri
 			// /api/v1/tickets/{id}/{action}
 			switch parts[2] {
 			case "followup":
+				// /api/v1/tickets/{id}/followup or /api/v1/tickets/{id}/followup/{followupId}
+				if len(parts) >= 4 {
+					followupID, err := strconv.Atoi(parts[3])
+					if err != nil {
+						writeError(w, http.StatusBadRequest, "invalid followup id")
+						return
+					}
+					switch r.Method {
+					case http.MethodPut:
+						p.apiUpdateFollowup(w, r, ticketID, followupID)
+					case http.MethodDelete:
+						p.apiDeleteFollowup(w, r, ticketID, followupID)
+					default:
+						writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+					}
+					return
+				}
 				if r.Method == http.MethodPost {
 					p.apiAddFollowup(w, r, ticketID)
 				} else {
@@ -615,11 +632,91 @@ func (p *Plugin) apiAddFollowup(w http.ResponseWriter, r *http.Request, ticketID
 		return
 	}
 
+	authorID := currentUserID(r)
 	if svc := p.currentNotification(); svc != nil {
-		svc.NotifyFollowupAdded(ticketID, currentUserID(r), req.IsPrivate)
+		svc.NotifyFollowupAdded(ticketID, authorID, req.IsPrivate)
+	}
+
+	// If the author is not an admin/technician, alert the admin channel that
+	// the employee replied on a ticket.
+	if !req.IsPrivate {
+		role, _ := identity.RoleEmployee, ([]string)(nil)
+		if own := p.currentOwnership(); own != nil {
+			role, _ = own.ResolveRole(authorID)
+		}
+		if role != identity.RoleAdministrator && role != identity.RoleTechnician {
+			if svc := p.currentNotification(); svc != nil {
+				svc.NotifyEmployeeReplied(ticketID, authorID)
+			}
+		}
 	}
 
 	writeOK(w, map[string]string{"status": "followup_added"})
+}
+
+func (p *Plugin) apiUpdateFollowup(w http.ResponseWriter, r *http.Request, ticketID, followupID int) {
+	// Only technicians and admins can edit a follow-up.
+	uid := currentUserID(r)
+	if own := p.currentOwnership(); own != nil && !own.CanEditTicket(uid) {
+		writeError(w, http.StatusForbidden, "permission denied: only technicians and admins can edit follow-ups")
+		return
+	}
+
+	var req struct {
+		Content   string `json:"content"`
+		IsPrivate bool   `json:"is_private"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if strings.TrimSpace(req.Content) == "" {
+		writeError(w, http.StatusBadRequest, "content is required")
+		return
+	}
+
+	client := glpiClientOrError(p, w)
+	if client == nil {
+		return
+	}
+	ctx, cancel := requestCtx(r)
+	defer cancel()
+
+	if err := client.UpdateFollowup(ctx, followupID, req.Content, req.IsPrivate); err != nil {
+		writeError(w, http.StatusInternalServerError, "update followup failed: "+err.Error())
+		return
+	}
+
+	if svc := p.currentNotification(); svc != nil {
+		svc.NotifyFollowupAdded(ticketID, uid, req.IsPrivate)
+	}
+	writeOK(w, map[string]string{"status": "followup_updated"})
+}
+
+func (p *Plugin) apiDeleteFollowup(w http.ResponseWriter, r *http.Request, ticketID, followupID int) {
+	// Only technicians and admins can delete a follow-up.
+	uid := currentUserID(r)
+	if own := p.currentOwnership(); own != nil && !own.CanEditTicket(uid) {
+		writeError(w, http.StatusForbidden, "permission denied: only technicians and admins can delete follow-ups")
+		return
+	}
+
+	client := glpiClientOrError(p, w)
+	if client == nil {
+		return
+	}
+	ctx, cancel := requestCtx(r)
+	defer cancel()
+
+	if err := client.DeleteFollowup(ctx, followupID); err != nil {
+		writeError(w, http.StatusInternalServerError, "delete followup failed: "+err.Error())
+		return
+	}
+
+	if svc := p.currentNotification(); svc != nil {
+		svc.NotifyTicketUpdated(ticketID, "followup_deleted", "", "")
+	}
+	writeOK(w, map[string]string{"status": "followup_deleted"})
 }
 
 func (p *Plugin) apiAddSolution(w http.ResponseWriter, r *http.Request, ticketID int) {

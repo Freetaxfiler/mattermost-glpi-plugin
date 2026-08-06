@@ -116,6 +116,8 @@ func (c *workflowTestClient) UpdateTicket(_ context.Context, _ int, input map[st
 }
 func (c *workflowTestClient) DeleteTicket(context.Context, int) error              { return nil }
 func (c *workflowTestClient) AddFollowup(context.Context, int, string, bool) error { return nil }
+func (c *workflowTestClient) UpdateFollowup(context.Context, int, string, bool) error { return nil }
+func (c *workflowTestClient) DeleteFollowup(context.Context, int) error { return nil }
 func (c *workflowTestClient) AddSolution(context.Context, int, string) error {
 	c.solutionCalls++
 	return nil

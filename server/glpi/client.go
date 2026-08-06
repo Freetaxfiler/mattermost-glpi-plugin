@@ -48,6 +48,8 @@ type GLPIClient interface {
 	UpdateTicket(ctx context.Context, id int, input map[string]interface{}) error
 	DeleteTicket(ctx context.Context, id int) error
 	AddFollowup(ctx context.Context, ticketID int, content string, isPrivate bool) error
+	UpdateFollowup(ctx context.Context, followupID int, content string, isPrivate bool) error
+	DeleteFollowup(ctx context.Context, followupID int) error
 	AddSolution(ctx context.Context, ticketID int, content string) error
 	SearchTickets(ctx context.Context, filter TicketFilter) ([]TicketSummary, int, error)
 

@@ -315,3 +315,24 @@ func (s *NotificationService) NotifyAdminsTicketCreated(details TicketCreatedDet
 		}
 	}
 }
+
+// NotifyEmployeeReplied alerts the IT admin channel when a non-admin employee
+// posts a public follow-up on a ticket. This lets the single admin/technician
+// know an employee is awaiting a response.
+func (s *NotificationService) NotifyEmployeeReplied(ticketID int, employeeUserID string) {
+	config := s.p.currentConfiguration()
+	if config == nil || config.NotificationChannelID == "" {
+		return
+	}
+
+	employeeName := ""
+	if user, appErr := s.p.API.GetUser(employeeUserID); appErr == nil && user != nil {
+		employeeName = strings.TrimSpace(user.FirstName + " " + user.LastName)
+		if employeeName == "" {
+			employeeName = user.Username
+		}
+	}
+
+	message := fmt.Sprintf("💬 **Employee reply on ticket #%d**\nEmployee: %s", ticketID, employeeName)
+	s.postToChannel(config.NotificationChannelID, message)
+}
